@@ -48,10 +48,8 @@ class ImpactTesting:
         :param presamples # of presamples
 
         # Double impact control
-        :param force_diff_lim: Limit  value of force derivative for determination of start/end point of the impact
+        :param imp_force_lim: Limit  value of force derivative for determination of start/end point of the impact
         """
-
-
         # Sensor data DataFrame
         self.sensor_df = pd.read_excel(sensor_xlsx)
         self.sensor_list = sensor_list
@@ -104,7 +102,7 @@ class ImpactTesting:
         self.measurement_array = np.zeros((self.no_impacts,
                                            len(self.all_channels),
                                            int(sampling_rate*acquisition_time)),
-                                           dtype=float)  # shape: no_impacts, no_channels, samples
+                                          dtype=np.float64)  # shape: no_impacts, no_channels, samples
 
         # Double impact control
         self.imp_force_lim = imp_force_lim
@@ -117,6 +115,7 @@ class ImpactTesting:
                           'Channels': self.all_channels,
                           'Force channel index': self.force_chn_ind}
 
+    # Task generation methods
     def add_channels(self):
         """
         sensors: list of sensors (Serial numbers) or dict of shape {SN: [list of directions (x,y,z)]}
@@ -174,13 +173,21 @@ class ImpactTesting:
                                                     current_excit_val=self.current_excit_val,
                                                     custom_scale_name='')
 
+    @staticmethod
+    def get_chn_name(chn_, ind_):
+        # Function generates channel name string.
+        if chn_['Merjena veličina'] == 'sila':
+            return 'force'
+        else:
+            return f'{ind_}{chn_.Smer}'
+
+    # Measurement methods
     def start_measurement(self, save_to=None):
         """
         :param save_to: name of the file in which measurements are to be saved.
         """
         # tqdm
         pbar = tqdm(total=self.no_impacts)
-
 
         # prevents error in case of interuption during last measurement
         if not self.task.is_task_done():
@@ -219,17 +226,56 @@ class ImpactTesting:
         pbar.container.children[-2].style.bar_color = 'green'
         self.save_results(save_to, pbar)
 
+    def acquire_signal(self):
+        """
+        Iz prejšnje verzije.
+        :return: measured data - individual measurement
+        """
+        trigger = pyTrigger(rows=int(self.sampling_rate * self.acqisition_time), channels=len(self.all_channels),
+                            trigger_type=self.trigger_type,
+                            trigger_channel=self.force_chn_ind,
+                            trigger_level=self.trigger_level,
+                            presamples=self.presamples)
+
+        trig = True
+        self.task.start()
+        while True:
+            data = self.measure()
+            trigger.add_data(data.T)
+            if trigger.finished:
+                self.task.stop()
+                break
+            if trigger.triggered == True and trig == True:
+                trig = False
+        return trigger.get_data().T
+
+    def measure(self):
+        no_smpl_per_chn = int(self.sampling_rate * self.acqisition_time * 2)
+        # *2, da zagotovo zajamemo dovolj podatkov. Trigger gledamo samo prvo polovico časa.
+        #self.task.start()
+        data = np.array(self.task.read(number_of_samples_per_channel=no_smpl_per_chn, timeout=10.0))
+        # self.task.wait_until_done(timeout=10)
+        #self.task.stop()
+        return data
+
     def check_chn_overload(self, imp):
         for i in range(self.measurement_array.shape[1]):
             # če vrednost preseže 95% do meje
             chn_min, chn_max = self.task.ai_channels[i].ai_min*0.95, self.task.ai_channels[i].ai_max*0.95
             sig_min, sig_max = min(self.measurement_array[imp, i, :]), max(self.measurement_array[imp, i, :])
-            #print(sig_min, sig_max)
+            # print(sig_min, sig_max)
             if (sig_min > chn_min) and (sig_max < chn_max):
                 return True
             else:
                 print(np.where((sig_min < chn_min) or (sig_max > chn_max)))
                 return False
+
+    def check_double_impact(self, imp, imp_end):
+        ind_ = np.where(self.measurement_array[imp, self.force_chn_ind, imp_end:] > self.double_imp_force_lim)[0]
+        if len(ind_) > 0:
+            return ind_+imp_end, False
+        else:
+            return None, True
 
     def get_imp_start_end(self, imp):
         max_force_ind = np.argmax(self.measurement_array[imp, self.force_chn_ind])
@@ -242,19 +288,12 @@ class ImpactTesting:
             end_ += 1
         return start_, end_
 
-    def check_double_impact(self, imp, imp_end):
-        ind_ = np.where(self.measurement_array[imp, self.force_chn_ind, imp_end:] > self.double_imp_force_lim)[0]
-        if len(ind_) > 0:
-            return ind_+imp_end, False
-        else:
-            return None, True
-
+    # Saving and displaying results
     def save_results(self, save_to, pbar):
-
         options = [f'Measurement {i+1}' for i in range(self.no_impacts)]
         out = Output()
         # Select measurements
-        selection = widgets.SelectMultiple(options=options, value=tuple(options))
+        selection = widgets.SelectMultiple(options=options, value=tuple(options), rows=len(options))
         selection.layout = Layout(width='200px')
         # Save measurement info
         save_meas_info_choice = widgets.ToggleButtons(
@@ -275,28 +314,28 @@ class ImpactTesting:
             widgets_ = selection, save_meas_info_choice, button
         display(self.widget_layout(widgets_, save_to))
 
-        def save_btn_clicked(B, save_to=save_to):
+        def save_btn_clicked(B, save_to_=save_to):
             chosen_meas = [int(_[-1])-1 for _ in list(selection.value)]
-            if save_to is None:
-                save_to = str(file_name.value)
-                if len(save_to) == 0:
+            if save_to_ is None:
+                save_to_ = str(file_name.value)
+                if len(save_to_) == 0:
                     message = 'Enter file name!'
                 else:
-                    message = f'Measurements {chosen_meas} saved to \"{save_to}.npy\"'
-                    np.save(f'{save_to}.npy', self.measurement_array[chosen_meas, :, :])
+                    message = f'Measurements {chosen_meas} saved to \"{save_to_}.npy\"'
+                    np.save(f'{save_to_}.npy', self.measurement_array[chosen_meas, :, :])
                     if save_meas_info_choice.value == 'Yes':
-                        message += f'\nMeasurement info saved to \"{save_to}.json\"'
+                        message += f'\nMeasurement info saved to \"{save_to_}.json\"'
                         json_obj = json.dumps(self.meas_info, indent=4)
-                        with open(f'{save_to}.json', 'w') as meas_data_file:
+                        with open(f'{save_to_}.json', 'w') as meas_data_file:
                             meas_data_file.write(json_obj)
                     pbar.container.children[-2].style.bar_color = 'black'
             else:
-                np.save(f'{save_to}.npy', self.measurement_array[chosen_meas, :, :])
-                message = f'Measurements {chosen_meas} saved to \"{save_to}.npy\"'
+                np.save(f'{save_to_}.npy', self.measurement_array[chosen_meas, :, :])
+                message = f'Measurements {chosen_meas} saved to \"{save_to_}.npy\"'
                 if save_meas_info_choice.value == 'Yes':
-                    message += f'\nMeasurement info saved to \"{save_to}.json\"'
+                    message += f'\nMeasurement info saved to \"{save_to_}.json\"'
                     json_obj = json.dumps(self.meas_info, indent=4)
-                    with open(f'{save_to}.json', 'w') as meas_data_file:
+                    with open(f'{save_to_}.json', 'w') as meas_data_file:
                         meas_data_file.write(json_obj)
                 pbar.container.children[-2].style.bar_color = 'black'
             with out:
@@ -318,7 +357,11 @@ class ImpactTesting:
             grid[1, 1:] = widgets_list[2]
         return grid
 
+    def clear_stored_data(self):
+        self.measurement_array = np.zeros_like(self.measurement_array, dtype=np.float64)
 
+    def close_task(self):
+        self.task.close()
 
     def plot_meas(self, meas_ind, msg, imp_start, imp_end, double_ind=None):
         """
@@ -330,8 +373,8 @@ class ImpactTesting:
         :param double_ind: index of double impact location
         :return:
         """
-        plot_min, plot_max = 85, 130
-        #print(imp_start, imp_end)
+        plot_min, plot_max = 85, 150
+        # print(imp_start, imp_end)
         fig, ax = plt.subplots(1, 4, figsize=(15, 2.5), tight_layout=True)
         mask = np.where(np.array(self.all_channels) != 'force')[0]
         force_ = self.measurement_array[meas_ind, self.force_chn_ind, plot_min:plot_max].T
@@ -353,47 +396,3 @@ class ImpactTesting:
             fig.patch.set_facecolor('#faa7a7')
 
         plt.show()
-
-    def clear_stored_data(self):
-        self.measurement_array = np.zeros_like(self.measurement_array)
-
-    def acquire_signal(self):
-        """
-        Iz prejšnje verzije.
-        :return: measured data - individual measurement
-        """
-        trigger = pyTrigger(rows=25600, channels=len(self.all_channels), trigger_type=self.trigger_type,
-                            trigger_channel=self.force_chn_ind,
-                            trigger_level=self.trigger_level,
-                            presamples=self.presamples)
-
-        trig = True
-        while True:
-            data = self.measure()
-            trigger.add_data(data.T)
-            if trigger.finished:
-                break
-            if trigger.triggered == True and trig == True:
-                trig = False
-        return trigger.get_data().T
-
-    def measure(self):
-        no_smpl_per_chn = int(self.sampling_rate * self.acqisition_time * 2)
-        # *2, da zagotovo zajamemo dovolj podatkov. Trigger gledamo samo prvo polovico časa.
-        self.task.start()
-        data = np.array(self.task.read(number_of_samples_per_channel=no_smpl_per_chn, timeout=10.0))
-        #self.task.wait_until_done(timeout=10)
-        self.task.stop()
-        return data
-
-    def close_task(self):
-        self.task.close()
-
-    @staticmethod
-    def get_chn_name(chn_, ind_):
-        # Function generates channel name string.
-        if chn_['Merjena veličina'] == 'sila':
-            return 'force'
-        else:
-            return f'{ind_}{chn_.Smer}'
-
