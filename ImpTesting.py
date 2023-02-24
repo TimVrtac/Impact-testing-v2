@@ -13,7 +13,7 @@ from tqdm.notebook import tqdm
 
 class ImpactTesting:
     def __init__(self, task_name, sensor_xlsx, sensor_list, sampling_rate, samps_per_chn, acquisition_time, no_impacts,
-                 trigger_type='up', trigger_level=10.0, presamples=100, imp_force_lim=0.01, double_imp_force_lim=1,
+                 trigger_type='up', trigger_level=10.0, presamples=100, imp_force_lim=0.02, double_imp_force_lim=1,
                  terminal_config=constants.TerminalConfiguration.PSEUDO_DIFF,
                  excitation_source=constants.ExcitationSource.INTERNAL,
                  current_excit_val=0.004, sample_mode=constants.AcquisitionType.CONTINUOUS):
@@ -202,13 +202,24 @@ class ImpactTesting:
             self.measurement_array[imp, :, :] = self.acquire_signal()
             # Check for chn overload
             no_overload = self.check_chn_overload(imp)
+            # Check for force overload
+            no_imp_overload = self.check_imp_overload(imp)
             # check for double imp
             imp_start, imp_end = self.get_imp_start_end(imp)
             double_ind, no_double = self.check_double_impact(imp, imp_end)
             # Izris meritve
             msg = None
-            if (not no_overload) and (not no_double):
-                msg = 'Double impact and chn #cifra# overload'
+            if (not no_overload) and (not no_double) and (not no_imp_overload):
+                msg = 'Double impact and chn #cifra# overload and force overload'
+                winsound.PlaySound('SystemHand', winsound.SND_ALIAS)
+            elif (not no_overload) and (not no_double):
+                msg = 'Chn #cifra# overload and double impact!'
+                winsound.PlaySound('SystemHand', winsound.SND_ALIAS)
+            elif (not no_double) and (not no_imp_overload):
+                msg = 'Double impact and force overload!'
+                winsound.PlaySound('SystemHand', winsound.SND_ALIAS)
+            elif (not no_overload) and (not no_imp_overload):
+                msg = 'Chn #cifra# overload and force overload!'
                 winsound.PlaySound('SystemHand', winsound.SND_ALIAS)
             elif not no_overload:
                 msg = 'Chn #cifra# overload!'
@@ -216,6 +227,10 @@ class ImpactTesting:
             elif not no_double:
                 msg = 'Double impact.'
                 winsound.PlaySound('SystemHand', winsound.SND_ALIAS)
+            elif not no_imp_overload:
+                msg = 'Force overload.'
+                winsound.PlaySound('SystemHand', winsound.SND_ALIAS)
+                # TODO: Check for imact overload!
             else:
                 winsound.Beep(300, 70)
             self.plot_meas(imp, msg=msg, imp_start=imp_start, imp_end=imp_end, double_ind=double_ind)
@@ -269,6 +284,14 @@ class ImpactTesting:
             else:
                 print(np.where((sig_min < chn_min) or (sig_max > chn_max)))
                 return False
+
+    def check_imp_overload(self, imp):
+        imp_ampl = max(self.measurement_array[imp, self.force_chn_ind, :])
+        imp_max = self.task.ai_channels[self.force_chn_ind].ai_max*0.95
+        if imp_ampl < imp_max:
+            return True
+        else:
+            return False
 
     def check_double_impact(self, imp, imp_end):
         ind_ = np.where(self.measurement_array[imp, self.force_chn_ind, imp_end:] > self.double_imp_force_lim)[0]
@@ -373,25 +396,33 @@ class ImpactTesting:
         :param double_ind: index of double impact location
         :return:
         """
-        plot_min, plot_max = 85, 150
+        plot_min, plot_max = imp_start-15, imp_end+30
         # print(imp_start, imp_end)
         fig, ax = plt.subplots(1, 4, figsize=(15, 2.5), tight_layout=True)
         mask = np.where(np.array(self.all_channels) != 'force')[0]
         force_ = self.measurement_array[meas_ind, self.force_chn_ind, plot_min:plot_max].T
-        ax[0].plot(force_)
-        ax[0].vlines(imp_start-plot_min, min(force_)-1, max(force_)+1, color='green', ls='--')
-        ax[0].vlines(imp_end-plot_min, min(force_)-1, max(force_)+1, color='red', ls='--')
+        times = np.arange(self.sampling_rate*self.acqisition_time)/self.sampling_rate
+        ax[0].plot(times[plot_min:plot_max], force_)
+        ax[0].vlines(imp_start / self.sampling_rate, min(force_) - 1, max(force_) + 1, color='green',
+                     ls='--')
+        ax[0].vlines(imp_end/self.sampling_rate, min(force_) - 1, max(force_) + 1, color='red', ls='--')
+        ax[0].set_xticks([imp_start/self.sampling_rate, imp_end/self.sampling_rate])
+        ax[0].set_xticklabels([f'{_:.5f}' for _ in [imp_start / self.sampling_rate, imp_end / self.sampling_rate]])
         ax[0].set_ylim(min(force_)-1, max(force_)+1)
-        ax[1].plot(self.measurement_array[meas_ind, self.force_chn_ind, :].T)
-        ax[2].plot(self.measurement_array[meas_ind, mask, :].T)
-        ax[3].semilogy(abs(np.fft.rfft(self.measurement_array[meas_ind, mask, :])).T)
+        ax[0].set_title(f'Impact duration: {(imp_end-imp_start)/self.sampling_rate*1000:.3f} ms')
+        ax[1].plot(times, self.measurement_array[meas_ind, self.force_chn_ind, :].T)
+        ax[1].set_title(f'Impact amplitude: {max(force_):.3f} N')
+        ax[2].plot(times, self.measurement_array[meas_ind, mask, :].T, lw=.5)
+        # TODO: dodaj enoto!
+        ax[2].set_title(f'Max. response: {np.max(self.measurement_array[meas_ind, mask, :]):.3f}')
+        ax[3].semilogy(abs(np.fft.rfft(self.measurement_array[meas_ind, mask, :])).T, lw=.5)
         if msg is None:
             fig.suptitle(f'Impact {meas_ind + 1}/{self.no_impacts}', fontsize=15)
             fig.patch.set_facecolor('#cafac5')
         else:
             if double_ind[0] < plot_max:
                 ax[0].vlines(double_ind[0]-plot_min, min(force_)-1, max(force_)+1, color='k', ls='--')
-            ax[1].vlines(double_ind[0]-plot_min, min(force_) - 1, max(force_) + 1, color='k', ls='--')
+            ax[1].vlines((double_ind[0])/self.sampling_rate, min(force_) - 1, max(force_) + 1, color='k', ls='--')
             fig.suptitle(f'Impact {meas_ind + 1}/{self.no_impacts} ({msg})', fontsize=12)
             fig.patch.set_facecolor('#faa7a7')
 
