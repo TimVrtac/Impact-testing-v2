@@ -13,24 +13,25 @@ from tqdm.notebook import tqdm
 
 class ImpactTesting:
     def __init__(self, task_name, sensor_xlsx, sensor_list, sampling_rate, samps_per_chn, acquisition_time, no_impacts,
-                 trigger_type='up', trigger_level=10.0, presamples=100, imp_force_lim=0.02, double_imp_force_lim=1,
+                 trigger_type='up', trigger_level=10.0, presamples=100, imp_force_lim=0.015, double_imp_force_lim=1,
                  terminal_config=constants.TerminalConfiguration.PSEUDO_DIFF,
                  excitation_source=constants.ExcitationSource.INTERNAL,
                  current_excit_val=0.004, sample_mode=constants.AcquisitionType.CONTINUOUS):
         """
         # TODO: Trenutno samo za IEPE
         # TODO: Check for double impacts -> prilagodi beepe
-        # TODO: Izrisi za vsako meritev
-        # TODO: Pri nekaterih meritvah čudno poreže signale -> preveri!
+        # TODO: Force okno
+        # TODO: Kontinuirana meritev
+        # TODO: Preveri imena naprav v primeru ene same kartice
         nidaqmx constants: https://nidaqmx-python.readthedocs.io/en/latest/constants.html
 
         # Sensor data parameters
-        :param sensor_xlsx: path to Excel file with sensor data
+        :param sensor_xlsx: path to the Excel file with sensor data
         :param sensor_list: list of sensors (Serial numbers) or dict of shape {SN: [list of directions (x,y,z)]}
 
         # General channel configuration parameters
         :param terminal_config: terminal configuration parameter (DEFAULT, DIFF, NRSE,
-                                PSEUFO_DIFF, RSE - see nidaqmx constants)
+                                PSEUDO_DIFF, RSE - see nidaqmx constants)
         :param excitation_source: excitation source parameter (EXTERNAL, INTERNAL, NONE - see nidaqmx constants)
         :param current_excit_val: excitation current [A] (float)
 
@@ -42,7 +43,7 @@ class ImpactTesting:
                                NI-DAQmx uses this value to determine the buffer size.
         :param acquisition_time: acquisition time [s] (int/float)
 
-        # Trigger conficuration parameters
+        # Trigger configuration parameters
         :param trigger_type: trigger type (up, down or abs - string)
         :param trigger_level: the level to cross, to start trigger (float)
         :param presamples # of presamples
@@ -62,7 +63,17 @@ class ImpactTesting:
         try:
             self.task = nidaqmx.task.Task(new_task_name=task_name)
         except nidaqmx.DaqError:
-            self.task = nidaqmx.task.Task(new_task_name=task_name + '_')
+            new_task_name = False
+            i = 1
+            while not new_task_name:
+                try:
+                    self.task = nidaqmx.task.Task(new_task_name=task_name + '_{i}')
+                    new_task_name = True
+                except nidaqmx.DaqError:
+                    i += 1
+                if i > 5:
+                    print('To many tasks generated. Restart kernel to generate new tasks.')
+                    break
             print(f"Repeated task name: task name changed to {task_name + '_'}")
         self.excitation_source = excitation_source
         self.current_excit_val = current_excit_val
@@ -115,10 +126,22 @@ class ImpactTesting:
                           'Channels': self.all_channels,
                           'Force channel index': self.force_chn_ind}
 
+        # Measurement series variables
+        self.meas_file = ''
+        self.points_to_measure = []
+        self.point_ind = 0
+        self.points_measured = []
+        self.saved = False
+
+    def reset_series_params(self):
+        self.point_ind = 0
+        self.points_measured = []
+        self.saved = False
+
     # Task generation methods
     def add_channels(self):
         """
-        sensors: list of sensors (Serial numbers) or dict of shape {SN: [list of directions (x,y,z)]}
+        sensors: list of sensors (Serial numbers) or dict of shape {SN: [list of directions ('x','y','z')]}
         task: nidaqmx Task instance
         df: dataframe with sensor data
         """
@@ -130,6 +153,8 @@ class ImpactTesting:
         if type(self.sensor_list) == list:
             for i in self.sensor_list:
                 temp_df_ = self.sensor_df[self.sensor_df['SN'].astype(str) == i]
+                if temp_df_.empty:
+                    raise ValueError(f'Invalid serial number: {i}. Check if the given SN is correct and that it is included in measurement data file (Merilna oprema.xlsx)')
                 for _, chn_ in temp_df_.iterrows():
                     # channel selection
                     try:
@@ -140,7 +165,7 @@ class ImpactTesting:
                                          units=self.unit_conv[chn_['Izhodna enota']],
                                          sensitivity=chn_.Obcutljivost,
                                          sensitivity_units=self.unit_conv[chn_['Enota obcutljivosti']])
-                        # print(i, phys_chn, chn_name)
+                        print(i, phys_chn, chn_name)
                         dev_chn_ind += 1
                     except nidaqmx.DaqError:
                         device_ind += 1
@@ -152,7 +177,43 @@ class ImpactTesting:
                                          units=self.unit_conv[chn_['Izhodna enota']],
                                          sensitivity=chn_.Obcutljivost,
                                          sensitivity_units=self.unit_conv[chn_['Enota obcutljivosti']])
-                        # print(i, phys_chn, chn_name)
+                        print(i, phys_chn, chn_name)
+                        dev_chn_ind += 1
+                sensor_ind += 1
+        elif type(self.sensor_list) == dict:
+            for sensor_, dir_ in self.sensor_list.items():
+                # selecting channels from sensor_df
+                temp_df_ = self.sensor_df['SN'].astype(str) == sensor_
+                if (temp_df_ == False).all():
+                    raise ValueError(f'Invalid serial number: {sensor_}. Check if the given SN is correct and that it is included in measurement data file (Merilna oprema.xlsx)')
+                df_mask = np.zeros_like(temp_df_)
+                for i in dir_:
+                    df_mask = df_mask | (self.sensor_df['Smer'].astype(str) == i)
+                temp_df_ = self.sensor_df[temp_df_ & df_mask]
+
+                for _, chn_ in temp_df_.iterrows():
+                    # channel selection
+                    try:
+                        phys_chn = self.device_list[device_ind] + f'/ai{dev_chn_ind}'
+                        chn_name = self.get_chn_name(chn_, sensor_ind)
+                        self.new_channel(chn_, physical_channel=phys_chn, name_to_assign_to_channel=chn_name,
+                                         min_val=chn_.Min, max_val=chn_.Max,
+                                         units=self.unit_conv[chn_['Izhodna enota']],
+                                         sensitivity=chn_.Obcutljivost,
+                                         sensitivity_units=self.unit_conv[chn_['Enota obcutljivosti']])
+                        # print(sensor, phys_chn, chn_name)
+                        dev_chn_ind += 1
+                    except nidaqmx.DaqError:
+                        device_ind += 1
+                        dev_chn_ind = 0
+                        phys_chn = self.device_list[device_ind] + f'/ai{dev_chn_ind}'
+                        chn_name = self.get_chn_name(chn_, sensor_ind)
+                        self.new_channel(chn_, physical_channel=phys_chn, name_to_assign_to_channel=chn_name,
+                                         min_val=chn_.Min, max_val=chn_.Max,
+                                         units=self.unit_conv[chn_['Izhodna enota']],
+                                         sensitivity=chn_.Obcutljivost,
+                                         sensitivity_units=self.unit_conv[chn_['Enota obcutljivosti']])
+                        # print( sensor_, phys_chn, chn_name)
                         dev_chn_ind += 1
                 sensor_ind += 1
 
@@ -182,7 +243,7 @@ class ImpactTesting:
             return f'{ind_}{chn_.Smer}'
 
     # Measurement methods
-    def start_measurement(self, save_to=None):
+    def start_measurement(self, save_to=None, series=False):
         """
         :param save_to: name of the file in which measurements are to be saved.
         """
@@ -230,7 +291,6 @@ class ImpactTesting:
             elif not no_imp_overload:
                 msg = 'Force overload.'
                 winsound.PlaySound('SystemHand', winsound.SND_ALIAS)
-                # TODO: Check for imact overload!
             else:
                 winsound.Beep(300, 70)
             self.plot_meas(imp, msg=msg, imp_start=imp_start, imp_end=imp_end, double_ind=double_ind)
@@ -239,7 +299,14 @@ class ImpactTesting:
                 pbar.update(1)
         winsound.PlaySound("SystemExit", winsound.SND_ALIAS)
         pbar.container.children[-2].style.bar_color = 'green'
-        self.save_results(save_to, pbar)
+        self.save_results(save_to, pbar, series=series)
+
+    def start_measurement_series(self, list_of_points, measurement_file):
+        self.reset_series_params()
+        self.points_to_measure = list_of_points
+        self.meas_file = measurement_file
+        print(f'Measurement point {self.points_to_measure[self.point_ind]}')
+        self.start_measurement(save_to=self.meas_file + fr'\{self.points_to_measure[self.point_ind]}', series=True)
 
     def acquire_signal(self):
         """
@@ -267,10 +334,7 @@ class ImpactTesting:
     def measure(self):
         no_smpl_per_chn = int(self.sampling_rate * self.acqisition_time * 2)
         # *2, da zagotovo zajamemo dovolj podatkov. Trigger gledamo samo prvo polovico časa.
-        #self.task.start()
         data = np.array(self.task.read(number_of_samples_per_channel=no_smpl_per_chn, timeout=10.0))
-        # self.task.wait_until_done(timeout=10)
-        #self.task.stop()
         return data
 
     def check_chn_overload(self, imp):
@@ -278,7 +342,6 @@ class ImpactTesting:
             # če vrednost preseže 95% do meje
             chn_min, chn_max = self.task.ai_channels[i].ai_min*0.95, self.task.ai_channels[i].ai_max*0.95
             sig_min, sig_max = min(self.measurement_array[imp, i, :]), max(self.measurement_array[imp, i, :])
-            # print(sig_min, sig_max)
             if (sig_min > chn_min) and (sig_max < chn_max):
                 return True
             else:
@@ -308,11 +371,15 @@ class ImpactTesting:
             start_ -= 1
         end_ = max_force_ind
         while force[end_] > self.imp_force_lim:
-            end_ += 1
+            if end_ < len(force):
+                end_ += 1
+            else:
+                break
+
         return start_, end_
 
     # Saving and displaying results
-    def save_results(self, save_to, pbar):
+    def save_results(self, save_to, pbar, series=False):
         options = [f'Measurement {i+1}' for i in range(self.no_impacts)]
         out = Output()
         # Select measurements
@@ -328,14 +395,30 @@ class ImpactTesting:
         )
         # Save measurements
         button = widgets.Button(description='Save')
+        # Buttons for measurement series
+        if series:
+            repeat_button = widgets.Button(style={'description_width': 'initial'},
+                                           description=f'Repeat (point {self.points_to_measure[self.point_ind]})')
+            try:
+                next_button_text = f'Next (point {self.points_to_measure[self.point_ind + 1]})'
+            except IndexError:
+                next_button_text = ''
+
+            next_button = widgets.Button(description=next_button_text)
+        else:
+            repeat_button, next_button = None, None
+
         if save_to is None:
             file_name = widgets.Text(description='Save to: ',
                                      placeholder='Filename',
                                      value='')
             widgets_ = [selection, save_meas_info_choice, file_name, button]
         else:
-            widgets_ = selection, save_meas_info_choice, button
-        display(self.widget_layout(widgets_, save_to))
+            if not series:
+                widgets_ = selection, save_meas_info_choice, button
+            else:
+                widgets_ = selection, save_meas_info_choice, button, repeat_button, next_button
+        display(self.widget_layout(widgets_, save_to, series))
 
         def save_btn_clicked(B, save_to_=save_to):
             chosen_meas = [int(_[-1])-1 for _ in list(selection.value)]
@@ -366,11 +449,29 @@ class ImpactTesting:
                 print(message)
             display(out)
 
+        def repeat_button_clicked(B):
+            clear_output(wait=True)
+            print(f'Measurement point {self.points_to_measure[self.point_ind]}')
+            self.start_measurement(save_to=self.meas_file + fr'\{self.points_to_measure[self.point_ind]}', series=True)
+
+        def next_button_clicked(B):
+            try:
+                next_point = self.points_to_measure[self.point_ind+1]
+                self.points_measured.append(self.points_to_measure[self.point_ind])
+                clear_output(wait=False)
+                self.point_ind += 1
+                print(f'Measurement point {self.points_to_measure[self.point_ind]}')
+                self.start_measurement(save_to=self.meas_file + fr'\{next_point}', series=True)
+            except IndexError:
+                print('All points measured!')
         button.on_click(save_btn_clicked)
+        if series:
+            repeat_button.on_click(repeat_button_clicked)
+            next_button.on_click(next_button_clicked)
 
     @staticmethod
-    def widget_layout(widgets_list, save_to):
-        grid = GridspecLayout(2, 3)
+    def widget_layout(widgets_list, save_to, series):
+        grid = GridspecLayout(2+series, 3+series)
         grid[:, 0] = widgets_list[0]
         grid[0, 1:] = widgets_list[1]
         if save_to is None:
@@ -378,6 +479,9 @@ class ImpactTesting:
             grid[1, 2] = widgets_list[3]
         else:
             grid[1, 1:] = widgets_list[2]
+        if series:
+            grid[2, 1] = widgets_list[3]
+            grid[2, 2] = widgets_list[4]
         return grid
 
     def clear_stored_data(self):
@@ -397,18 +501,26 @@ class ImpactTesting:
         :return:
         """
         plot_min, plot_max = imp_start-15, imp_end+30
+        if plot_min < 0:
+            plot_min = 0
+        if imp_start < 0:
+            imp_start = 0
         # print(imp_start, imp_end)
         fig, ax = plt.subplots(1, 4, figsize=(15, 2.5), tight_layout=True)
         mask = np.where(np.array(self.all_channels) != 'force')[0]
         force_ = self.measurement_array[meas_ind, self.force_chn_ind, plot_min:plot_max].T
         times = np.arange(self.sampling_rate*self.acqisition_time)/self.sampling_rate
         ax[0].plot(times[plot_min:plot_max], force_)
-        ax[0].vlines(imp_start / self.sampling_rate, min(force_) - 1, max(force_) + 1, color='green',
-                     ls='--')
-        ax[0].vlines(imp_end/self.sampling_rate, min(force_) - 1, max(force_) + 1, color='red', ls='--')
+        try:
+            ax[0].vlines(imp_start / self.sampling_rate, min(force_) - 1, max(force_) + 1, color='green',
+                        ls='--')
+            ax[0].vlines(imp_end/self.sampling_rate, min(force_) - 1, max(force_) + 1, color='red', ls='--')
+            ax[0].set_ylim(min(force_) - 1, max(force_) + 1)
+        except ValueError:
+            print(imp_start, imp_end, plot_min, plot_max)
+            pass
         ax[0].set_xticks([imp_start/self.sampling_rate, imp_end/self.sampling_rate])
         ax[0].set_xticklabels([f'{_:.5f}' for _ in [imp_start / self.sampling_rate, imp_end / self.sampling_rate]])
-        ax[0].set_ylim(min(force_)-1, max(force_)+1)
         ax[0].set_title(f'Impact duration: {(imp_end-imp_start)/self.sampling_rate*1000:.3f} ms')
         ax[1].plot(times, self.measurement_array[meas_ind, self.force_chn_ind, :].T)
         ax[1].set_title(f'Impact amplitude: {max(force_):.3f} N')
