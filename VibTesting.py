@@ -246,12 +246,9 @@ class VibTesting:
         else:
             return f'{ind_}{chn_.Smer}'
 
+    # Operational measurement methods
     def start_op_measurement(self, save_to=None, start_w_button=True):
-        # VZEMI SAMPLING_RATE IZ OBJEKTA
-
-        total_samples = self.acquisition_time * self.sampling_rate
-        meas_data = np.zeros((total_samples, len(self.all_channels)))
-        pbar = None
+        meas_data, pbar = None, None
         if start_w_button:
             start_meas_button = widgets.Button(description='Start measurement')
 
@@ -260,42 +257,35 @@ class VibTesting:
             def start_btn_clicked(B):
                 clear_output()
                 print('Start btn pressed')
-                pbar = tqdm(total=self.acquisition_time)
-                start_time = time.time()
-                start_time_old = 0
-                i = 0
-                self.task.start()
-                while True:
-                    meas_data[(i-1)*self.sampling_rate:i*self.sampling_rate] = np.array(
-                        self.task.read(number_of_samples_per_channel=self.sampling_rate, timeout=10.0))
-                    if math.floor(time.time() - start_time) > start_time_old:
-                        pbar.update()
-                        start_time_old = math.floor(time.time() - start_time)
-                    if math.floor(time.time() - start_time) > self.acquisition_time:
-                        pbar.container.children[-2].style.bar_color = 'green'
-                        break
-                    i += 1
+                meas_data, pbar = self.acquire_op_signal()
+
             start_meas_button.on_click(start_btn_clicked)
 
         else:
-            i = 0
-            pbar = tqdm(total=self.acquisition_time)
-            start_time = time.time()
-            start_time_old = 0
-            self.task.start()
-            while True:
-                meas_data[(i - 1) * self.sampling_rate:i * self.sampling_rate] = np.array(
-                    self.task.read(number_of_samples_per_channel=self.sampling_rate, timeout=10.0))
-                if math.floor(time.time() - start_time) > start_time_old:
-                    pbar.update()
-                    start_time_old = math.floor(time.time() - start_time)
-                if math.floor(time.time() - start_time) > self.acquisition_time:
-                    pbar.container.children[-2].style.bar_color = 'green'
-                    break
-                i += 1
+            meas_data, pbar = self.acquire_op_signal()
         self.task.stop()
         self.measurement_array[0, :, :] = meas_data.T
         self.save_op_test_results(save_to, pbar)
+
+    def acquire_op_signal(self):
+        total_samples = self.acquisition_time * self.sampling_rate
+        meas_data = np.zeros((total_samples, len(self.all_channels)))
+        pbar = tqdm(total=self.acquisition_time)
+        start_time = time.time()
+        start_time_old = 0
+        i = 0
+        self.task.start()
+        while True:
+            meas_data[(i - 1) * self.sampling_rate:i * self.sampling_rate] = np.array(
+                self.task.read(number_of_samples_per_channel=self.sampling_rate, timeout=10.0))
+            if math.floor(time.time() - start_time) > start_time_old:
+                pbar.update()
+                start_time_old = math.floor(time.time() - start_time)
+            if math.floor(time.time() - start_time) > self.acquisition_time:
+                pbar.container.children[-2].style.bar_color = 'green'
+                break
+            i += 1
+        return meas_data, pbar
 
     def save_op_test_results(self, save_to, pbar):
         out = Output()
@@ -356,7 +346,7 @@ class VibTesting:
 
         save_button.on_click(save_btn_clicked)
 
-    # Measurement methods
+    # Impact measurement methods
     def start_impact_test(self, save_to=None, series=False):
         """
         :param save_to: name of the file in which measurements are to be saved.
