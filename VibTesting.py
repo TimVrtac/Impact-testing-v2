@@ -9,6 +9,8 @@ from ipywidgets import widgets, Output,  Layout, GridspecLayout
 from IPython.display import display, clear_output
 import json
 from tqdm.notebook import tqdm
+import time
+import math
 
 
 class VibTesting:
@@ -93,7 +95,7 @@ class VibTesting:
 
         # sampling configuration
         self.sampling_rate = sampling_rate
-        self.acqisition_time = acquisition_time
+        self.acquisition_time = acquisition_time
         self.task.timing.cfg_samp_clk_timing(rate=self.sampling_rate, sample_mode=sample_mode,
                                              samps_per_chan=samps_per_chn)  # set sampling for the task
 
@@ -121,7 +123,7 @@ class VibTesting:
 
         # Measurement info
         self.meas_info = {'Sampling rate': self.sampling_rate,
-                          'Acquisiton time': self.acqisition_time,
+                          'Acquisiton time': self.acquisition_time,
                           'Used devices': self.device_list,
                           'Channels': self.all_channels,
                           'Force channel index': self.force_chn_ind}
@@ -154,7 +156,8 @@ class VibTesting:
             for i in self.sensor_list:
                 temp_df_ = self.sensor_df[self.sensor_df['SN'].astype(str) == i]
                 if temp_df_.empty:
-                    raise ValueError(f'Invalid serial number: {i}. Check if the given SN is correct and that it is included in measurement data file (Merilna oprema.xlsx)')
+                    raise ValueError(f'Invalid serial number: {i}. Check if the given SN is correct and that it is '
+                                     f'included in measurement data file (Merilna oprema.xlsx)')
                 for _, chn_ in temp_df_.iterrows():
                     # channel selection
                     try:
@@ -185,7 +188,8 @@ class VibTesting:
                 # selecting channels from sensor_df
                 temp_df_ = self.sensor_df['SN'].astype(str) == sensor_
                 if (temp_df_ == False).all():
-                    raise ValueError(f'Invalid serial number: {sensor_}. Check if the given SN is correct and that it is included in measurement data file (Merilna oprema.xlsx)')
+                    raise ValueError(f'Invalid serial number: {sensor_}. Check if the given SN is correct and that it '
+                                     f'is included in measurement data file (Merilna oprema.xlsx)')
                 df_mask = np.zeros_like(temp_df_)
                 for i in dir_:
                     df_mask = df_mask | (self.sensor_df['Smer'].astype(str) == i)
@@ -242,6 +246,116 @@ class VibTesting:
         else:
             return f'{ind_}{chn_.Smer}'
 
+    def start_op_measurement(self, save_to=None, start_w_button=True):
+        # VZEMI SAMPLING_RATE IZ OBJEKTA
+
+        total_samples = self.acquisition_time * self.sampling_rate
+        meas_data = np.zeros((total_samples, len(self.all_channels)))
+        pbar = None
+        if start_w_button:
+            start_meas_button = widgets.Button(description='Start measurement')
+
+            display(start_meas_button)
+
+            def start_btn_clicked(B):
+                clear_output()
+                print('Start btn pressed')
+                pbar = tqdm(total=self.acquisition_time)
+                start_time = time.time()
+                start_time_old = 0
+                i = 0
+                self.task.start()
+                while True:
+                    meas_data[(i-1)*self.sampling_rate:i*self.sampling_rate] = np.array(
+                        self.task.read(number_of_samples_per_channel=self.sampling_rate, timeout=10.0))
+                    if math.floor(time.time() - start_time) > start_time_old:
+                        pbar.update()
+                        start_time_old = math.floor(time.time() - start_time)
+                    if math.floor(time.time() - start_time) > self.acquisition_time:
+                        pbar.container.children[-2].style.bar_color = 'green'
+                        break
+                    i += 1
+            start_meas_button.on_click(start_btn_clicked)
+
+        else:
+            i = 0
+            pbar = tqdm(total=self.acquisition_time)
+            start_time = time.time()
+            start_time_old = 0
+            self.task.start()
+            while True:
+                meas_data[(i - 1) * self.sampling_rate:i * self.sampling_rate] = np.array(
+                    self.task.read(number_of_samples_per_channel=self.sampling_rate, timeout=10.0))
+                if math.floor(time.time() - start_time) > start_time_old:
+                    pbar.update()
+                    start_time_old = math.floor(time.time() - start_time)
+                if math.floor(time.time() - start_time) > self.acquisition_time:
+                    pbar.container.children[-2].style.bar_color = 'green'
+                    break
+                i += 1
+        self.task.stop()
+        self.measurement_array[0, :, :] = meas_data.T
+        self.save_op_test_results(save_to, pbar)
+
+    def save_op_test_results(self, save_to, pbar):
+        out = Output()
+        # Save measurement info
+        save_meas_info_choice = widgets.ToggleButtons(
+            options=['No', 'Yes'],
+            description='Save measurement info: \n',
+            disabled=False,
+            button_style='',  # 'success', 'info', 'warning', 'danger' or ''
+            style={'description_width': 'initial'}
+        )
+        # Save measurements
+        save_button = widgets.Button(description='Save')
+        # Buttons for measurement series
+
+        if save_to is None:
+            file_name = widgets.Text(description='Save to: ',
+                                     placeholder='Filename',
+                                     value='')
+            widgets_ = [save_button, save_meas_info_choice, file_name]
+        else:
+            widgets_ = save_button, save_meas_info_choice
+        # widgets layout
+        grid = GridspecLayout(2, 2)
+        grid[0, 0] = widgets_[0]
+        grid[1, :] = widgets_[1]
+        if save_to is None:
+            grid[0, 1:] = widgets_[2]
+        display(grid)
+
+        def save_btn_clicked(B, save_to_=save_to):
+            if save_to_ is None:
+                save_to_ = str(file_name.value)
+                if len(save_to_) == 0:
+                    message = 'Enter file name!'
+                else:
+                    message = f'Measurement saved to \"{save_to_}.npy\"'
+                    np.save(f'{save_to_}.npy', self.measurement_array.squeeze())
+                    if save_meas_info_choice.value == 'Yes':
+                        message += f'\nMeasurement info saved to \"{save_to_}.json\"'
+                        json_obj = json.dumps(self.meas_info, indent=4)
+                        with open(f'{save_to_}.json', 'w') as meas_data_file:
+                            meas_data_file.write(json_obj)
+                    pbar.container.children[-2].style.bar_color = 'black'
+            else:
+                np.save(f'{save_to_}.npy', self.measurement_array.squeeze())
+                message = f'Measurements saved to \"{save_to_}.npy\"'
+                if save_meas_info_choice.value == 'Yes':
+                    message += f'\nMeasurement info saved to \"{save_to_}.json\"'
+                    json_obj = json.dumps(self.meas_info, indent=4)
+                    with open(f'{save_to_}.json', 'w') as meas_data_file:
+                        meas_data_file.write(json_obj)
+                pbar.container.children[-2].style.bar_color = 'black'
+            with out:
+                clear_output()
+                print(message)
+            display(out)
+
+        save_button.on_click(save_btn_clicked)
+
     # Measurement methods
     def start_impact_test(self, save_to=None, series=False):
         """
@@ -251,17 +365,17 @@ class VibTesting:
         # tqdm
         pbar = tqdm(total=self.no_impacts)
 
-        # prevents error in case of interuption during last measurement
+        # prevents error in case of interruption during last measurement
         if not self.task.is_task_done():
             self.task.stop()
 
         imp = 0
         self.clear_stored_data()
         while imp < self.no_impacts:
-            # Znak za začetek meritve.
+            # Beep denoting start of the measurement
             winsound.Beep(410, 180)
-            # Meritev
-            self.measurement_array[imp, :, :] = self.acquire_signal()
+            # Signal acquisition
+            self.measurement_array[imp, :, :] = self.acquire_imp_signal()
             # Check for chn overload
             no_overload = self.check_chn_overload(imp)
             # Check for force overload
@@ -269,7 +383,7 @@ class VibTesting:
             # check for double imp
             imp_start, imp_end = self.get_imp_start_end(imp)
             double_ind, no_double = self.check_double_impact(imp, imp_end)
-            # Izris meritve
+            # Check for channel overloads, double impacts
             msg = None
             if (not no_overload) and (not no_double) and (not no_imp_overload):
                 msg = 'Double impact and chn #cifra# overload and force overload'
@@ -294,13 +408,14 @@ class VibTesting:
                 winsound.PlaySound('SystemHand', winsound.SND_ALIAS)
             else:
                 winsound.Beep(300, 70)
+            # Plotting acquired signals
             self.plot_meas(imp, msg=msg, imp_start=imp_start, imp_end=imp_end, double_ind=double_ind)
             if msg is None:
                 imp += 1
                 pbar.update(1)
         winsound.PlaySound("SystemExit", winsound.SND_ALIAS)
         pbar.container.children[-2].style.bar_color = 'green'
-        self.save_results(save_to, pbar, series=series)
+        self.save_imp_test_results(save_to, pbar, series=series)
 
     def start_imp_test_series(self, list_of_points, measurement_file):
         self.reset_series_params()
@@ -309,12 +424,12 @@ class VibTesting:
         print(f'Measurement point {self.points_to_measure[self.point_ind]}')
         self.start_impact_test(save_to=self.meas_file + fr'\{self.points_to_measure[self.point_ind]}', series=True)
 
-    def acquire_signal(self):
+    def acquire_imp_signal(self):
         """
-        Iz prejšnje verzije.
+        Adopted from Impact testing v1.
         :return: measured data - individual measurement
         """
-        trigger = pyTrigger(rows=int(self.sampling_rate * self.acqisition_time), channels=len(self.all_channels),
+        trigger = pyTrigger(rows=int(self.sampling_rate * self.acquisition_time), channels=len(self.all_channels),
                             trigger_type=self.trigger_type,
                             trigger_channel=self.force_chn_ind,
                             trigger_level=self.trigger_level,
@@ -333,8 +448,8 @@ class VibTesting:
         return trigger.get_data().T
 
     def measure(self):
-        no_smpl_per_chn = int(self.sampling_rate * self.acqisition_time * 2)
-        # *2, da zagotovo zajamemo dovolj podatkov. Trigger gledamo samo prvo polovico časa.
+        no_smpl_per_chn = int(self.sampling_rate * self.acquisition_time * 2)
+        # factor *2 to obtain sufficient amount of samples. (?)
         data = np.array(self.task.read(number_of_samples_per_channel=no_smpl_per_chn, timeout=10.0))
         return data
 
@@ -380,7 +495,7 @@ class VibTesting:
         return start_, end_
 
     # Saving and displaying results
-    def save_results(self, save_to, pbar, series=False):
+    def save_imp_test_results(self, save_to, pbar, series=False):
         options = [f'Measurement {i+1}' for i in range(self.no_impacts)]
         out = Output()
         # Select measurements
@@ -510,11 +625,11 @@ class VibTesting:
         fig, ax = plt.subplots(1, 4, figsize=(15, 2.5), tight_layout=True)
         mask = np.where(np.array(self.all_channels) != 'force')[0]
         force_ = self.measurement_array[meas_ind, self.force_chn_ind, plot_min:plot_max].T
-        times = np.arange(self.sampling_rate*self.acqisition_time)/self.sampling_rate
+        times = np.arange(self.sampling_rate * self.acquisition_time) / self.sampling_rate
         ax[0].plot(times[plot_min:plot_max], force_)
         try:
             ax[0].vlines(imp_start / self.sampling_rate, min(force_) - 1, max(force_) + 1, color='green',
-                        ls='--')
+                         ls='--')
             ax[0].vlines(imp_end/self.sampling_rate, min(force_) - 1, max(force_) + 1, color='red', ls='--')
             ax[0].set_ylim(min(force_) - 1, max(force_) + 1)
         except ValueError:
