@@ -11,7 +11,7 @@ import json
 from tqdm.notebook import tqdm
 
 
-class ImpactTesting:
+class VibTesting:
     def __init__(self, task_name, sensor_xlsx, sensor_list, sampling_rate, samps_per_chn, acquisition_time, no_impacts,
                  trigger_type='up', trigger_level=10.0, presamples=100, imp_force_lim=0.015, double_imp_force_lim=1,
                  terminal_config=constants.TerminalConfiguration.PSEUDO_DIFF,
@@ -243,7 +243,7 @@ class ImpactTesting:
             return f'{ind_}{chn_.Smer}'
 
     # Measurement methods
-    def start_measurement(self, save_to=None, series=False):
+    def start_impact_test(self, save_to=None, series=False):
         """
         :param save_to: name of the file in which measurements are to be saved.
         :param series: 
@@ -302,12 +302,12 @@ class ImpactTesting:
         pbar.container.children[-2].style.bar_color = 'green'
         self.save_results(save_to, pbar, series=series)
 
-    def start_measurement_series(self, list_of_points, measurement_file):
+    def start_imp_test_series(self, list_of_points, measurement_file):
         self.reset_series_params()
         self.points_to_measure = list_of_points
         self.meas_file = measurement_file
         print(f'Measurement point {self.points_to_measure[self.point_ind]}')
-        self.start_measurement(save_to=self.meas_file + fr'\{self.points_to_measure[self.point_ind]}', series=True)
+        self.start_impact_test(save_to=self.meas_file + fr'\{self.points_to_measure[self.point_ind]}', series=True)
 
     def acquire_signal(self):
         """
@@ -453,7 +453,7 @@ class ImpactTesting:
         def repeat_button_clicked(B):
             clear_output(wait=True)
             print(f'Measurement point {self.points_to_measure[self.point_ind]}')
-            self.start_measurement(save_to=self.meas_file + fr'\{self.points_to_measure[self.point_ind]}', series=True)
+            self.start_impact_test(save_to=self.meas_file + fr'\{self.points_to_measure[self.point_ind]}', series=True)
 
         def next_button_clicked(B):
             try:
@@ -462,7 +462,7 @@ class ImpactTesting:
                 clear_output(wait=False)
                 self.point_ind += 1
                 print(f'Measurement point {self.points_to_measure[self.point_ind]}')
-                self.start_measurement(save_to=self.meas_file + fr'\{next_point}', series=True)
+                self.start_impact_test(save_to=self.meas_file + fr'\{next_point}', series=True)
             except IndexError:
                 print('All points measured!')
         button.on_click(save_btn_clicked)
