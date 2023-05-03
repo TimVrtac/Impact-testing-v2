@@ -1,0 +1,15 @@
+{
+    "Sampling rate": 51200,
+    "Acquisiton time": 1,
+    "Used devices": [
+        "cDAQ6",
+        "cDAQ6Mod1",
+        "SimDev1"
+    ],
+    "Channels": [
+        "force",
+        "1x",
+        "1z"
+    ],
+    "Force channel index": 0
+}

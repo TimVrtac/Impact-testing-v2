@@ -246,6 +246,7 @@ class ImpactTesting:
     def start_measurement(self, save_to=None, series=False):
         """
         :param save_to: name of the file in which measurements are to be saved.
+        :param series: 
         """
         # tqdm
         pbar = tqdm(total=self.no_impacts)
