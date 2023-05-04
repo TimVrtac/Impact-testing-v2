@@ -1,0 +1,14 @@
+{
+    "Sampling rate": 51200,
+    "Acquisiton time": 1,
+    "Used devices": [
+        "cDAQ2",
+        "cDAQ2Mod4",
+        "SimDev1"
+    ],
+    "Channels": [
+        "0x",
+        "0y",
+        "0z"
+    ]
+}

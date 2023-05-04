@@ -14,7 +14,8 @@ import math
 
 
 class VibTesting:
-    def __init__(self, task_name, sensor_xlsx, sensor_list, sampling_rate, samps_per_chn, acquisition_time, no_impacts,
+    def __init__(self, task_name, sensor_xlsx, sensor_list, sampling_rate, samps_per_chn, acquisition_time,
+                 no_impacts=None,
                  trigger_type='up', trigger_level=10.0, presamples=100, imp_force_lim=0.015, double_imp_force_lim=1,
                  terminal_config=constants.TerminalConfiguration.PSEUDO_DIFF,
                  excitation_source=constants.ExcitationSource.INTERNAL,
@@ -101,14 +102,18 @@ class VibTesting:
 
         # list all channels
         self.all_channels = [str(_.name) for _ in self.task.ai_channels]
-        self.force_chn_ind = int(np.where(np.array(self.all_channels) == 'force')[0])
-
+        try:
+            self.force_chn_ind = int(np.where(np.array(self.all_channels) == 'force')[0])
+        except TypeError:
+            print('No force sensor.')
         # trigger configuration
         self.trigger_type = trigger_type
         self.trigger_level = trigger_level
         self.presamples = presamples
 
         # measurement configuration
+        if no_impacts is None:
+            no_impacts = 1
         self.no_impacts = no_impacts
 
         # storing measurements
@@ -122,11 +127,17 @@ class VibTesting:
         self.double_imp_force_lim = double_imp_force_lim
 
         # Measurement info
-        self.meas_info = {'Sampling rate': self.sampling_rate,
-                          'Acquisiton time': self.acquisition_time,
-                          'Used devices': self.device_list,
-                          'Channels': self.all_channels,
-                          'Force channel index': self.force_chn_ind}
+        try:
+            self.meas_info = {'Sampling rate': self.sampling_rate,
+                              'Acquisiton time': self.acquisition_time,
+                              'Used devices': self.device_list,
+                              'Channels': self.all_channels,
+                              'Force channel index': self.force_chn_ind}
+        except AttributeError:
+            self.meas_info = {'Sampling rate': self.sampling_rate,
+                              'Acquisiton time': self.acquisition_time,
+                              'Used devices': self.device_list,
+                              'Channels': self.all_channels}
 
         # Measurement series variables
         self.meas_file = ''
@@ -168,7 +179,6 @@ class VibTesting:
                                          units=self.unit_conv[chn_['Izhodna enota']],
                                          sensitivity=chn_.Obcutljivost,
                                          sensitivity_units=self.unit_conv[chn_['Enota obcutljivosti']])
-                        print(i, phys_chn, chn_name)
                         dev_chn_ind += 1
                     except nidaqmx.DaqError:
                         device_ind += 1
@@ -180,7 +190,6 @@ class VibTesting:
                                          units=self.unit_conv[chn_['Izhodna enota']],
                                          sensitivity=chn_.Obcutljivost,
                                          sensitivity_units=self.unit_conv[chn_['Enota obcutljivosti']])
-                        print(i, phys_chn, chn_name)
                         dev_chn_ind += 1
                 sensor_ind += 1
         elif type(self.sensor_list) == dict:
@@ -247,7 +256,10 @@ class VibTesting:
             return f'{ind_}{chn_.Smer}'
 
     # Operational measurement methods
-    def start_op_measurement(self, save_to=None, start_w_button=True):
+    def start_op_measurement(self, acq_time=None, save_to=None, start_w_button=True):
+        # acq_time omejen na celo število
+        if acq_time is not None:
+            self.acquisition_time = acq_time
         meas_data, pbar = None, None
         if start_w_button:
             start_meas_button = widgets.Button(description='Start measurement')
@@ -257,35 +269,39 @@ class VibTesting:
             def start_btn_clicked(B):
                 clear_output()
                 print('Start btn pressed')
-                meas_data, pbar = self.acquire_op_signal()
+                global pbar
+                pbar = self.acquire_op_signal(save_to=save_to)
 
             start_meas_button.on_click(start_btn_clicked)
 
         else:
-            meas_data, pbar = self.acquire_op_signal()
-        self.task.stop()
-        self.measurement_array[0, :, :] = meas_data.T
-        self.save_op_test_results(save_to, pbar)
+            pbar = self.acquire_op_signal(save_to=save_to)
 
-    def acquire_op_signal(self):
-        total_samples = self.acquisition_time * self.sampling_rate
-        meas_data = np.zeros((total_samples, len(self.all_channels)))
-        pbar = tqdm(total=self.acquisition_time)
-        start_time = time.time()
-        start_time_old = 0
-        i = 0
-        self.task.start()
-        while True:
-            meas_data[(i - 1) * self.sampling_rate:i * self.sampling_rate] = np.array(
-                self.task.read(number_of_samples_per_channel=self.sampling_rate, timeout=10.0))
-            if math.floor(time.time() - start_time) > start_time_old:
+    def acquire_op_signal(self, save_to):
+        self.measurement_array = np.zeros((len(self.all_channels),
+                                           int(self.sampling_rate * self.acquisition_time)),
+                                          dtype=np.float64)
+        try:
+            pbar = tqdm(total=self.acquisition_time)
+            start_time = time.time()
+            i = 1
+            self.task.start()
+            while True:
+                self.measurement_array[:, (i - 1) * self.sampling_rate:i * self.sampling_rate] = np.array(
+                    self.task.read(number_of_samples_per_channel=self.sampling_rate, timeout=10.0))
                 pbar.update()
-                start_time_old = math.floor(time.time() - start_time)
-            if math.floor(time.time() - start_time) > self.acquisition_time:
-                pbar.container.children[-2].style.bar_color = 'green'
-                break
-            i += 1
-        return meas_data, pbar
+                if math.floor(time.time() - start_time) >= self.acquisition_time:
+                    pbar.container.children[-2].style.bar_color = 'green'
+                    break
+                i += 1
+            self.task.stop()
+            self.plot_op_meas()
+            self.save_op_test_results(save_to, pbar)
+        except nidaqmx.DaqError:
+            clear_output()
+            self.task.stop()
+            self.acquire_op_signal(save_to=save_to)
+        return pbar
 
     def save_op_test_results(self, save_to, pbar):
         out = Output()
@@ -347,11 +363,18 @@ class VibTesting:
         save_button.on_click(save_btn_clicked)
 
     # Impact measurement methods
-    def start_impact_test(self, save_to=None, series=False):
+    def start_impact_test(self, no_impacts=None, save_to=None, series=False):
         """
+        :param no_impacts:
         :param save_to: name of the file in which measurements are to be saved.
         :param series: 
         """
+        if no_impacts is not None:
+            self.no_impacts = no_impacts
+            self.measurement_array = np.zeros((self.no_impacts,
+                                               len(self.all_channels),
+                                               int(self.sampling_rate * self.acquisition_time)),
+                                              dtype=np.float64)
         # tqdm
         pbar = tqdm(total=self.no_impacts)
 
@@ -399,7 +422,7 @@ class VibTesting:
             else:
                 winsound.Beep(300, 70)
             # Plotting acquired signals
-            self.plot_meas(imp, msg=msg, imp_start=imp_start, imp_end=imp_end, double_ind=double_ind)
+            self.plot_imp_meas(imp, msg=msg, imp_start=imp_start, imp_end=imp_end, double_ind=double_ind)
             if msg is None:
                 imp += 1
                 pbar.update(1)
@@ -596,7 +619,7 @@ class VibTesting:
     def close_task(self):
         self.task.close()
 
-    def plot_meas(self, meas_ind, msg, imp_start, imp_end, double_ind=None):
+    def plot_imp_meas(self, meas_ind, msg, imp_start, imp_end, double_ind=None):
         """
         Plots individual measurement
         :param meas_ind:
@@ -645,3 +668,12 @@ class VibTesting:
             fig.patch.set_facecolor('#faa7a7')
 
         plt.show()
+
+    def plot_op_meas(self):
+        fig = plt.figure(figsize=(15, 2.2))
+        ax = fig.add_axes([0.1, 0.1, .8, .8])
+        ax.plot(self.measurement_array.T)
+        ax.grid()
+        fig.patch.set_facecolor('#cafac5')
+        plt.show()
+
