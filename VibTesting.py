@@ -84,8 +84,7 @@ class VibTesting:
         # General channel parameters
         self.terminal_config = terminal_config
         # nidaqmx constants - unit conversion
-        self.unit_conv = {'mV/g': constants.AccelSensitivityUnits.MILLIVOLTS_PER_G,
-                          'mV/m/s**2': constants.AccelSensitivityUnits.MILLIVOLTS_PER_G,
+        self.unit_conv = {'mV/g': constants.AccelSensitivityUnits.MILLIVOLTS_PER_G, #'mV/m/s**2': constants.AccelSensitivityUnits.MILLIVOLTS_PER_G, -> mV/m/s**2 ne obstaja -> pretvorba občutljivosti v mV/m/g!
                           'g': constants.AccelUnits.G,
                           'm/s**2': constants.AccelUnits.METERS_PER_SECOND_SQUARED,
                           'mV/N': constants.ForceIEPESensorSensitivityUnits.MILLIVOLTS_PER_NEWTON,
@@ -672,7 +671,9 @@ class VibTesting:
     def plot_op_meas(self):
         fig = plt.figure(figsize=(15, 2.2))
         ax = fig.add_axes([0.1, 0.1, .8, .8])
-        ax.plot(self.measurement_array.T)
+        ax.plot(np.linspace(0, self.acquisition_time, self.acquisition_time*self.sampling_rate),
+                self.measurement_array.T)
+        ax.set_xlabel('time [s]')
         ax.grid()
         fig.patch.set_facecolor('#cafac5')
         plt.show()
