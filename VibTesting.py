@@ -145,6 +145,17 @@ class VibTesting:
         self.points_measured = []
         self.saved = False
 
+        # Admittance measurement variables
+        self.admittance = False
+        self.Y = None
+        self.dof_data = None
+        self.Y_done = None
+        self.adm_channels = None
+        self.adm_impacts = None
+        self.force_chn_ind = None
+        self.chn_factors = None
+        self.imp_factors = None
+
     def reset_series_params(self):
         self.point_ind = 0
         self.points_measured = []
@@ -208,6 +219,7 @@ class VibTesting:
                     try:
                         phys_chn = self.device_list[device_ind] + f'/ai{dev_chn_ind}'
                         chn_name = self.get_chn_name(chn_, sensor_ind)
+                        print(chn_name)
                         self.new_channel(chn_, physical_channel=phys_chn, name_to_assign_to_channel=chn_name,
                                          min_val=chn_.Min, max_val=chn_.Max,
                                          units=self.unit_conv[chn_['Izhodna enota']],
@@ -220,6 +232,7 @@ class VibTesting:
                         dev_chn_ind = 0
                         phys_chn = self.device_list[device_ind] + f'/ai{dev_chn_ind}'
                         chn_name = self.get_chn_name(chn_, sensor_ind)
+                        print(chn_name)
                         self.new_channel(chn_, physical_channel=phys_chn, name_to_assign_to_channel=chn_name,
                                          min_val=chn_.Min, max_val=chn_.Max,
                                          units=self.unit_conv[chn_['Izhodna enota']],
@@ -227,7 +240,7 @@ class VibTesting:
                                          sensitivity_units=self.unit_conv[chn_['Enota obcutljivosti']])
                         # print( sensor_, phys_chn, chn_name)
                         dev_chn_ind += 1
-                sensor_ind += 1
+                    sensor_ind += 1
 
     def new_channel(self, chn_data, physical_channel, name_to_assign_to_channel, min_val, max_val, units,
                     sensitivity, sensitivity_units):
@@ -436,6 +449,31 @@ class VibTesting:
         print(f'Measurement point {self.points_to_measure[self.point_ind]}')
         self.start_impact_test(save_to=self.meas_file + fr'\{self.points_to_measure[self.point_ind]}', series=True)
 
+    def start_admittance_measurement(self, channels, impacts, chn_factors, imp_factors, save_to=None, force_chn_ind=0, existing_Y=None, existing_json=None):
+        self.admittance = True
+        self.adm_channels, self.adm_impacts = channels, impacts
+        self.chn_factors, self.imp_factors = chn_factors, imp_factors
+        self.force_chn_ind = force_chn_ind
+        if (existing_Y is not None) or (existing_json is not None):  
+            if (existing_Y is None) or (existing_json is None):
+                raise ValueError('Both existing_Y and existing_json must be provided.')
+            else:
+                # load existing data
+                self.Y = np.load(existing_Y)
+                self.dof_data = self.load_from_json(existing_json)
+                
+                # check dof combinations to be measured
+                to_do = [_ for _ in self.dof_data['progress'] if self.dof_data['progress'][_] == 0]
+        else:
+            # create new data
+            self.dof_data = self.get_dof_dict()
+            to_do = [_ for _ in self.dof_data['progress']]
+            self.save_to_json(save_to + r'dof_data.json')
+
+        impacts_to_do = list(set([_[2:] for _ in to_do]))
+        imp_to_do = [_ for _ in self.adm_impacts if _ in impacts_to_do] # to ensure correct order of impacts
+        self.start_imp_test_series(imp_to_do, save_to)
+
     def acquire_imp_signal(self):
         """
         Adopted from Impact testing v1.
@@ -492,24 +530,53 @@ class VibTesting:
             return None, True
 
     def get_imp_start_end(self, imp):
-        max_force_ind = np.argmax(self.measurement_array[imp, self.force_chn_ind])
         force = self.measurement_array[imp, self.force_chn_ind]
+        max_force_ind = np.argmax(force)
         start_ = max_force_ind
         while force[start_] > self.imp_force_lim:
-            start_ -= 1
+            if start_ > (len(force)-1)*-1:
+                start_ -= 1
+            else: break
         end_ = max_force_ind
         while force[end_] > self.imp_force_lim:
-            if end_ < len(force):
+            if end_ < (len(force)-1):
                 end_ += 1
             else:
                 break
-
+            
         return start_, end_
 
     # Saving and displaying results
     def save_imp_test_results(self, save_to, pbar, series=False):
+
+         # Plot Y_done in admittance measurement
+        if self.admittance:
+            # get FRF
+            chn_mask = np.array([_ for _ in range(self.measurement_array.shape[1]) if _ != self.force_chn_ind])
+            impact_ = self.measurement_array[:, self.force_chn_ind]*self.imp_factors[self.point_ind]
+            channels_ = self.measurement_array[:, chn_mask]*np.array(self.chn_factors)[None, :, None]
+            imp_fft_ = np.fft.rfft(impact_).T
+            chn_fft_ = np.fft.rfft(channels_).T
+            if self.Y is None:
+                self.Y = np.zeros((imp_fft_.shape[0], len(self.adm_channels), len(self.adm_impacts)), dtype=np.complex128)
+            imp_name_ = self.points_to_measure[self.point_ind]
+            imp_ind_ = self.adm_impacts.index(imp_name_)
+            for chn_ in self.adm_channels:
+                chn_ind_ = self.adm_channels.index(chn_)
+                self.Y[:, chn_ind_, imp_ind_] = self.get_FRF(chn_fft_[:,chn_ind_], imp_fft_)
+                # update dof_data
+                dof_name_str_ = f'{chn_}{imp_name_}'
+                self.dof_data['progress'][dof_name_str_] = 1
+            np.save(self.meas_file + r'Y.npy', self.Y)
+            
+            self.save_to_json(self.meas_file + r'dof_data.json')
+
+            self.get_done_matrix()
+            self.plot_Y_done()
+
         options = [f'Measurement {i+1}' for i in range(self.no_impacts)]
         out = Output()
+
         # Select measurements
         selection = widgets.SelectMultiple(options=options, value=tuple(options), rows=len(options))
         selection.layout = Layout(width='200px')
@@ -523,6 +590,9 @@ class VibTesting:
         )
         # Save measurements
         button = widgets.Button(description='Save')
+
+       
+
         # Buttons for measurement series
         if series:
             repeat_button = widgets.Button(style={'description_width': 'initial'},
@@ -667,6 +737,104 @@ class VibTesting:
             fig.patch.set_facecolor('#faa7a7')
 
         plt.show()
+
+    
+
+    # Admittance measurement methods
+    def get_dof_dict(self):
+        rows_, columns_ = np.meshgrid(self.adm_channels, self.adm_impacts)
+        rows_, columns_ = rows_.flatten(), columns_.flatten()
+        dof_dict = {}
+        dof_dict['channels'], dof_dict['impacts'], dof_dict['chn_factors'], dof_dict['imp_dactors'], dof_dict['progress'] = self.adm_channels, self.adm_impacts, self.chn_factors, self.imp_factors, {}
+        for r_, c_ in zip(rows_, columns_):
+            dof_dict['progress'][f'{r_}{c_}'] = 0
+        return dof_dict
+
+    def get_done_matrix(self):
+        self.Y_done = np.zeros((len(self.dof_data['channels']), len(self.dof_data['impacts'])))
+        rows_, columns_ = np.meshgrid(self.dof_data['channels'], self.dof_data['impacts'])
+        rows_, columns_ = rows_.flatten(), columns_.flatten()
+        for r_, c_ in zip(rows_, columns_):
+            self.Y_done[self.dof_data['channels'].index(r_), self.dof_data['impacts'].index(c_)] = self.dof_data['progress'][f'{r_}{c_}']
+
+    def plot_Y_done(self):
+        plt.figure()
+        plt.imshow(self.Y_done, cmap='RdYlGn', vmin=0, vmax=1)
+        plt.xlabel('Impacts')
+        plt.ylabel('Channels')
+        plt.xticks(np.arange(len(self.adm_impacts)), self.adm_impacts)
+        plt.yticks(np.arange(len(self.adm_channels)), self.adm_channels)
+        plt.show()
+
+    
+    @staticmethod
+    def get_FRF(X, F, filter_list=None, estimator='H1', kind='admittance'):
+        """
+        Function calculates frequency response functions (FRF) from measurement data.
+        :param X: np.array of accelerations (frequencies, repeated measurements)
+        :param F: np.array of accelerations (frequencies, repeated measurements)
+        :param filter_list: list of indices of measurements to be excluded from the FRF calculation
+        :param estimator: FRF estimator (H1, H2)
+        :param kind: FRF type (admittance/impedance)
+        :return: averaged FRF
+        """
+        N = X.shape[1]
+        # Izračun cenilk prenosne funkcije
+        if estimator == 'H1':
+            S_fx_avg = np.zeros_like(X[:, 0])
+            S_ff_avg = np.zeros_like(F[:, 0])
+        elif estimator == 'H2':
+            S_xx_avg = np.zeros_like(X[:, 0])
+            S_xf_avg = np.zeros_like(F[:, 0])
+        else:
+            S_fx_avg, S_ff_avg, S_xx_avg, S_xf_avg = None, None, None, None
+            raise Exception('Invalid estimator. Enter H1 or H2.')
+        for i in range(N):
+            if estimator == 'H1':
+                if filter_list is not None:
+                    if i not in filter_list:
+                        S_fx_avg += np.conj(F[:, i]) * X[:, i]
+                        S_ff_avg += np.conj(F[:, i]) * F[:, i]
+                else:
+                    S_fx_avg += np.conj(F[:, i]) * X[:, i]
+                    S_ff_avg += np.conj(F[:, i]) * F[:, i]
+            elif estimator == 'H2':
+                if filter_list is not None:
+                    if i not in filter_list:
+                        S_xx_avg += np.conj(X[:, i]) * X[:, i]
+                        S_xf_avg += np.conj(X[:, i]) * F[:, i]
+                else:
+                    S_xx_avg += np.conj(X[:, i]) * X[:, i]
+                    S_xf_avg += np.conj(X[:, i]) * F[:, i]
+            else:
+                print('Invalid estimator')
+                return
+        if estimator == 'H1':
+            if kind == 'admittance':
+                return S_fx_avg / S_ff_avg
+            elif kind == 'impedance':
+                return S_ff_avg / S_fx_avg
+            else:
+                print('Invalid FRF type')
+                return
+        elif estimator == 'H2':
+            if kind == 'admittance':
+                return S_xx_avg / S_xf_avg
+            elif kind == 'impedance':
+                return S_xf_avg / S_xx_avg
+            else:
+                print('Invalid FRF type')
+                return
+
+    @staticmethod
+    def load_from_json(path):
+        with open(path, 'r') as f:
+            dict_ = json.load(f)
+        return dict_
+
+    def save_to_json(self, path):
+        with open(path, 'w') as f:
+            json.dump(self.dof_data, f)
 
     def plot_op_meas(self):
         fig = plt.figure(figsize=(15, 2.2))
