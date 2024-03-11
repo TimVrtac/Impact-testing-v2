@@ -5,6 +5,7 @@ import pandas as pd
 from pyTrigger import pyTrigger
 import winsound
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MultipleLocator
 from ipywidgets import widgets, Output,  Layout, GridspecLayout
 from IPython.display import display, clear_output
 import json
@@ -450,6 +451,9 @@ class VibTesting:
         self.start_impact_test(save_to=self.meas_file + fr'\{self.points_to_measure[self.point_ind]}', series=True)
 
     def start_admittance_measurement(self, channels, impacts, chn_factors, imp_factors, save_to=None, force_chn_ind=0, existing_Y=None, existing_json=None):
+        """
+        Channel names must be of the same length, impact names must be of the same length.
+        """
         self.admittance = True
         self.adm_channels, self.adm_impacts = channels, impacts
         self.chn_factors, self.imp_factors = chn_factors, imp_factors
@@ -468,9 +472,10 @@ class VibTesting:
             # create new data
             self.dof_data = self.get_dof_dict()
             to_do = [_ for _ in self.dof_data['progress']]
-            self.save_to_json(save_to + r'dof_data.json')
+            self.save_to_json(save_to + r'\dof_data.json')
 
-        impacts_to_do = list(set([_[2:] for _ in to_do]))
+        chn_name_length = len(self.adm_channels[0])
+        impacts_to_do = list(set([_[chn_name_length:] for i_, _ in enumerate(to_do)])) # TODO: 2 zamenjaj za dolžino oznake kanala!
         imp_to_do = [_ for _ in self.adm_impacts if _ in impacts_to_do] # to ensure correct order of impacts
         self.start_imp_test_series(imp_to_do, save_to)
 
@@ -548,32 +553,6 @@ class VibTesting:
 
     # Saving and displaying results
     def save_imp_test_results(self, save_to, pbar, series=False):
-
-         # Plot Y_done in admittance measurement
-        if self.admittance:
-            # get FRF
-            chn_mask = np.array([_ for _ in range(self.measurement_array.shape[1]) if _ != self.force_chn_ind])
-            impact_ = self.measurement_array[:, self.force_chn_ind]*self.imp_factors[self.point_ind]
-            channels_ = self.measurement_array[:, chn_mask]*np.array(self.chn_factors)[None, :, None]
-            imp_fft_ = np.fft.rfft(impact_).T
-            chn_fft_ = np.fft.rfft(channels_).T
-            if self.Y is None:
-                self.Y = np.zeros((imp_fft_.shape[0], len(self.adm_channels), len(self.adm_impacts)), dtype=np.complex128)
-            imp_name_ = self.points_to_measure[self.point_ind]
-            imp_ind_ = self.adm_impacts.index(imp_name_)
-            for chn_ in self.adm_channels:
-                chn_ind_ = self.adm_channels.index(chn_)
-                self.Y[:, chn_ind_, imp_ind_] = self.get_FRF(chn_fft_[:,chn_ind_], imp_fft_)
-                # update dof_data
-                dof_name_str_ = f'{chn_}{imp_name_}'
-                self.dof_data['progress'][dof_name_str_] = 1
-            np.save(self.meas_file + r'Y.npy', self.Y)
-            
-            self.save_to_json(self.meas_file + r'dof_data.json')
-
-            self.get_done_matrix()
-            self.plot_Y_done()
-
         options = [f'Measurement {i+1}' for i in range(self.no_impacts)]
         out = Output()
 
@@ -620,6 +599,32 @@ class VibTesting:
 
         def save_btn_clicked(B, save_to_=save_to):
             chosen_meas = [int(_[-1])-1 for _ in list(selection.value)]
+            if self.admittance:
+                # get FRF
+                chn_mask = np.array([_ for _ in range(self.measurement_array.shape[1]) if _ != self.force_chn_ind])
+                imp_name_ = self.points_to_measure[self.point_ind]
+                imp_ind_ = self.adm_impacts.index(imp_name_)
+                impact_ = self.measurement_array[chosen_meas, :][:, self.force_chn_ind]*self.imp_factors[imp_ind_]
+                #print('imp factor: ', self.imp_factors[imp_ind_])
+                channels_ = self.measurement_array[chosen_meas, :][:, chn_mask]*np.array(self.chn_factors)[None, :, None]
+                imp_fft_ = np.fft.rfft(impact_).T
+                chn_fft_ = np.fft.rfft(channels_).T
+                if self.Y is None:
+                    self.Y = np.zeros((imp_fft_.shape[0], len(self.adm_channels), len(self.adm_impacts)), dtype=np.complex128)
+                for chn_ in self.adm_channels:
+                    chn_ind_ = self.adm_channels.index(chn_)
+                    self.Y[:, chn_ind_, imp_ind_] = self.get_FRF(chn_fft_[:,chn_ind_], imp_fft_)
+                    # update dof_data
+                    dof_name_str_ = f'{chn_}{imp_name_}'
+                    self.dof_data['progress'][dof_name_str_] = 1
+                
+                # Plot Y_done in admittance measurement
+                self.get_done_matrix()
+                self.plot_Y_done()
+
+                np.save(self.meas_file + r'\Y.npy', self.Y)
+            
+            self.save_to_json(self.meas_file + r'\dof_data.json')
             if save_to_ is None:
                 save_to_ = str(file_name.value)
                 if len(save_to_) == 0:
@@ -745,7 +750,7 @@ class VibTesting:
         rows_, columns_ = np.meshgrid(self.adm_channels, self.adm_impacts)
         rows_, columns_ = rows_.flatten(), columns_.flatten()
         dof_dict = {}
-        dof_dict['channels'], dof_dict['impacts'], dof_dict['chn_factors'], dof_dict['imp_dactors'], dof_dict['progress'] = self.adm_channels, self.adm_impacts, self.chn_factors, self.imp_factors, {}
+        dof_dict['channels'], dof_dict['impacts'], dof_dict['chn_factors'], dof_dict['imp_factors'], dof_dict['progress'] = self.adm_channels, self.adm_impacts, self.chn_factors, self.imp_factors, {}
         for r_, c_ in zip(rows_, columns_):
             dof_dict['progress'][f'{r_}{c_}'] = 0
         return dof_dict
@@ -758,12 +763,21 @@ class VibTesting:
             self.Y_done[self.dof_data['channels'].index(r_), self.dof_data['impacts'].index(c_)] = self.dof_data['progress'][f'{r_}{c_}']
 
     def plot_Y_done(self):
-        plt.figure()
+        imp_name_len = len(self.adm_impacts[0])
+        if imp_name_len >2:
+            rotation=90
+        else:
+            rotation=0
+        plt.figure(figsize=(0.5*len(self.adm_impacts), 0.2*len(self.adm_channels)))
         plt.imshow(self.Y_done, cmap='RdYlGn', vmin=0, vmax=1)
         plt.xlabel('Impacts')
         plt.ylabel('Channels')
-        plt.xticks(np.arange(len(self.adm_impacts)), self.adm_impacts)
+        plt.xticks(np.arange(len(self.adm_impacts)), self.adm_impacts, rotation=rotation)
         plt.yticks(np.arange(len(self.adm_channels)), self.adm_channels)
+        ax = plt.gca()
+        ax.xaxis.set_minor_locator(MultipleLocator(.5))
+        ax.yaxis.set_minor_locator(MultipleLocator(.5))
+        ax.grid(which='minor', linewidth=.5)
         plt.show()
 
     
