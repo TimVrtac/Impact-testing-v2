@@ -1,0 +1,88 @@
+#pragma once
+
+typedef enum {
+	DSX_TOO_MANY_SAMPLES_AVAILABLE = 2,
+	DSX_END_OF_ENUM = 1,
+	DSX_NO_ERROR = 0,
+	DSX_DCOM_CHANNEL_ID_NOT_FOUND = -1,
+	DSX_DCOM_UNKNOWN_ERROR = -2,
+	DSX_DCOM_NO_DATA = -3,
+	DSX_DCOM_NOT_CONNECTED = -4,
+	DSX_COUNT_OUT_OF_BOUNDS = -5,
+	DSX_NET_UNABLE_TO_CONNECT = -6,
+	DSX_NET_UNKNOWN_ERROR = -7,
+	DSX_UNKNOWN_ERROR = -8,
+	DSX_NULL_HANDLER = -9,
+	DSX_INVALID_CONNECTION_STRING = -10,
+	DSX_DCOM_ISSUE = -11,
+	DSX_DCOM_COULD_NOT_CONNECT = -12,
+	DSX_DCOM_NO_CHANNELS_TO_ENUMERATE = -13,
+	DSX_DCOM_EMPTY_ARRAY = -14,
+	DSX_CANNOT_MAKE_CH_INSTANCE = -15,
+	DSX_WRONG_PROPS_NAME = -16,
+	DSX_ERROR_GETTING_LENGTH_PROPS = -17
+} DX_ERROR_CODE;
+
+typedef enum {
+	DSX_CONNECTION_TYPE_DCOM = 0,
+	DSX_CONNECTION_TYPE_NET = 1
+} DSX_CONNECTION_TYPE;
+
+typedef enum {
+	DSX_CH_ASYNC = 0,
+	DSX_CH_SYNC = 1,
+	DSX_CH_SINGLE_VALUE = 2
+} DSX_CH_TYPE;
+
+typedef enum {
+  dtByte = 0,
+  dtShortInt = 1,
+  dtSmallInt = 2,
+  dtWord = 3,
+  dtInteger = 4,
+  dtSingle = 5,
+  dtInt64 = 6,
+  dtDouble = 7,
+  dtLongword = 8,
+  dtComplexSingle = 9,
+  dtComplexDouble = 10,
+  dtText = 11,
+  dtBinary = 12,
+  dtCANMessage = 13,
+  dtCANFDMessage = 14,
+  dtBytes8 = 15,
+  dtBytes16 = 16,
+  dtBytes32 = 17,
+  dtBytes64 = 18
+} DSX_DATA_TYPE; 
+
+
+
+#define CHANNEL_LIST_MAX_RESPONSE_LENGTH 8192
+
+#define NET_CONNECTED_MSG "+CONNECTED"
+#define NET_CONNECTED_MSG_LEN (strlen(NET_CONNECTED_MSG) - 1)
+#define NET_ERR_MSG "+ERR"
+#define NET_ERR_MSG_LEN (strlen(NET_ERR_MSG) - 1)
+#define NET_STX_MSG "+STX"
+#define NET_STX_MSG_LEN (strlen(NET_STX_MSG) - 1)
+#define NET_ETX_MSG "+ETX"
+#define NET_ETX_MSG_LEN (strlen(NET_ETX_MSG) - 1)
+#define NET_OK_MSG "+ OK"
+#define NET_OK_MSG_LEN (strlen(NET_OK_MSG) - 1)
+
+#define NET_CMD_LIST_USED_CHANNELS "LISTUSEDCHS"
+
+
+#define DEFAULT_BUFLEN 512
+
+#define DEFAULT_BUFLEN 512
+#define NAME_LENGTH 100
+
+#define PACKET_BUF_LEN 10000
+#define SAMPLES_BUF_LEN 10000
+
+#define MAX_CHANNEL_INDEX_LENGTH 10
+
+
+

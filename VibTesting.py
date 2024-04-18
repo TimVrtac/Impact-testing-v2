@@ -12,15 +12,19 @@ import json
 from tqdm.notebook import tqdm
 import time
 import math
+import ctypes
+from ctypes.wintypes import *
 
 
 class VibTesting:
-    def __init__(self, task_name, sensor_xlsx, sensor_list, sampling_rate, samps_per_chn, acquisition_time,
+    def __init__(self, acquisition_time, sampling_rate=None, samps_per_chn=None,
+                 task_name=None, sensor_xlsx=None, sensor_list=None, 
                  no_impacts=None,
                  trigger_type='up', trigger_level=10.0, presamples=100, imp_force_lim=0.015, double_imp_force_lim=1,
                  terminal_config=constants.TerminalConfiguration.PSEUDO_DIFF,
                  excitation_source=constants.ExcitationSource.INTERNAL,
-                 current_excit_val=0.004, sample_mode=constants.AcquisitionType.CONTINUOUS):
+                 current_excit_val=0.004, sample_mode=constants.AcquisitionType.CONTINUOUS, source='NI', DS_setup_file_path=None,
+                 DS_force_s_ind=None):
         """
         # TODO: Trenutno samo za IEPE
         # TODO: Check for double impacts -> prilagodi beepe
@@ -54,58 +58,105 @@ class VibTesting:
 
         # Double impact control
         :param imp_force_lim: Limit  value of force derivative for determination of start/end point of the impact
+
+        # Data source
+        :param source: NI or dewesoft (str)
         """
-        # Sensor data DataFrame
-        self.sensor_df = pd.read_excel(sensor_xlsx)
-        self.sensor_list = sensor_list
-
-        # Get all connected NI devices
-        system = nidaqmx.system.System.local()
-        self.device_list = [_.name for _ in list(system.devices)]
-
-        # Open new task
-        try:
-            self.task = nidaqmx.task.Task(new_task_name=task_name)
-        except nidaqmx.DaqError:
-            new_task_name = False
-            i = 1
-            while not new_task_name:
-                try:
-                    self.task = nidaqmx.task.Task(new_task_name=task_name + '_{i}')
-                    new_task_name = True
-                except nidaqmx.DaqError:
-                    i += 1
-                if i > 5:
-                    print('To many tasks generated. Restart kernel to generate new tasks.')
-                    break
-            print(f"Repeated task name: task name changed to {task_name + '_'}")
-        self.excitation_source = excitation_source
-        self.current_excit_val = current_excit_val
-
-        # General channel parameters
-        self.terminal_config = terminal_config
-        # nidaqmx constants - unit conversion
-        self.unit_conv = {'mV/g': constants.AccelSensitivityUnits.MILLIVOLTS_PER_G, #'mV/m/s**2': constants.AccelSensitivityUnits.MILLIVOLTS_PER_G, -> mV/m/s**2 ne obstaja -> pretvorba občutljivosti v mV/m/g!
-                          'g': constants.AccelUnits.G,
-                          'm/s**2': constants.AccelUnits.METERS_PER_SECOND_SQUARED,
-                          'mV/N': constants.ForceIEPESensorSensitivityUnits.MILLIVOLTS_PER_NEWTON,
-                          'N': constants.ForceUnits.NEWTONS}
-
-        # add channels to the task
-        self.add_channels()
-
-        # sampling configuration
-        self.sampling_rate = sampling_rate
+        self.data_source = source
         self.acquisition_time = acquisition_time
-        self.task.timing.cfg_samp_clk_timing(rate=self.sampling_rate, sample_mode=sample_mode,
-                                             samps_per_chan=samps_per_chn)  # set sampling for the task
 
-        # list all channels
-        self.all_channels = [str(_.name) for _ in self.task.ai_channels]
-        try:
-            self.force_chn_ind = int(np.where(np.array(self.all_channels) == 'force')[0])
-        except TypeError:
-            print('No force sensor.')
+        if self.data_source == 'NI':
+            self.sampling_rate = sampling_rate
+            # Sensor data DataFrame
+            self.sensor_df = pd.read_excel(sensor_xlsx)
+            self.sensor_list = sensor_list
+
+            # Get all connected NI devices
+            system = nidaqmx.system.System.local()
+            self.device_list = [_.name for _ in list(system.devices)]
+
+            # Open new task
+            try:
+                self.task = nidaqmx.task.Task(new_task_name=task_name)
+            except nidaqmx.DaqError:
+                new_task_name = False
+                i = 1
+                while not new_task_name:
+                    try:
+                        self.task = nidaqmx.task.Task(new_task_name=task_name + '_{i}')
+                        new_task_name = True
+                    except nidaqmx.DaqError:
+                        i += 1
+                    if i > 5:
+                        print('To many tasks generated. Restart kernel to generate new tasks.')
+                        break
+                print(f"Repeated task name: task name changed to {task_name + '_'}")
+            self.excitation_source = excitation_source
+            self.current_excit_val = current_excit_val
+
+            # General channel parameters
+            self.terminal_config = terminal_config
+            # nidaqmx constants - unit conversion
+            self.unit_conv = {'mV/g': constants.AccelSensitivityUnits.MILLIVOLTS_PER_G, #'mV/m/s**2': constants.AccelSensitivityUnits.MILLIVOLTS_PER_G, -> mV/m/s**2 ne obstaja -> pretvorba občutljivosti v mV/m/g!
+                            'g': constants.AccelUnits.G,
+                            'm/s**2': constants.AccelUnits.METERS_PER_SECOND_SQUARED,
+                            'mV/N': constants.ForceIEPESensorSensitivityUnits.MILLIVOLTS_PER_NEWTON,
+                            'N': constants.ForceUnits.NEWTONS}
+
+            # add channels to the task
+            self.add_channels()
+
+            # sampling configuration
+            self.task.timing.cfg_samp_clk_timing(rate=self.sampling_rate, sample_mode=sample_mode,
+                                                samps_per_chan=samps_per_chn)  # set sampling for the task
+
+            # list all channels
+            self.all_channels = [str(_.name) for _ in self.task.ai_channels]
+
+            try:
+                self.force_chn_ind = int(np.where(np.array(self.all_channels) == 'force')[0])
+            except TypeError:
+                print('No force sensor.')
+        
+        if self.data_source == 'Dewesoft':
+            self.hllDll, self.ch_instances, self.conn_instance = self.connect_DS(DS_setup_file_path)
+            #self.sampling_rate = sampling_rate # Obtained from DewesoftX !!!
+            self.force_chn_ind = DS_force_s_ind
+            # Get sampling rate
+            smpl_rate = ctypes.c_double()
+            self.hllDll.dsconGetSampleRate(self.ch_instances[0], ctypes.byref(smpl_rate))
+            self.sampling_rate = int(smpl_rate.value)
+            # buffer pointers
+            self.data_p = ctypes.cast((ctypes.c_double * 2 * self.sampling_rate)(), ctypes.POINTER(ctypes.c_double))   # data buffer pointers
+            self.time_stamp_p = ctypes.cast((ctypes.c_double * 2* self.sampling_rate)(), ctypes.POINTER(ctypes.c_double))  # time_stamp pointers
+            self.countData = ctypes.c_size_t(5000)
+            self.update_rate = 2000/self.sampling_rate
+            # variables
+            self.firts_meas = True
+            self.all_channels = [f'Chn. {i}' for i in range(len(self.ch_instances))]
+            self.measurements_temp = {i:np.array([]) for i in range(len(self.all_channels))}
+            self.count_ = 0
+            # Get sensor data
+            self.sensor_df = pd.read_excel(sensor_xlsx)
+            self.sensor_list = sensor_list
+            self.chn_names = []
+            self.sensor_data = {}
+            sensor_ind = 0
+            for i in self.sensor_list:
+                temp_df_ = self.sensor_df[self.sensor_df['SN'].astype(str) == i]
+                if temp_df_.empty:
+                    raise ValueError(f'Invalid serial number: {i}. Check if the given SN is correct and that it is '
+                                     f'included in measurement data file (Merilna oprema.xlsx)')
+                for _, chn_ in temp_df_.iterrows():
+                    # channel selection
+                    chn_name = self.get_chn_name(chn_, sensor_ind)
+                    self.chn_names.append(chn_name)
+                    self.sensor_data[chn_name] = {}
+                    self.sensor_data[chn_name]['min'] = chn_.Min
+                    self.sensor_data[chn_name]['max'] = chn_.Max
+                    self.sensor_data[chn_name]['sensitivity'] = chn_.Obcutljivost
+                sensor_ind += 1
+        
         # trigger configuration
         self.trigger_type = trigger_type
         self.trigger_level = trigger_level
@@ -116,10 +167,10 @@ class VibTesting:
             no_impacts = 1
         self.no_impacts = no_impacts
 
-        # storing measurements
+        # storing self.measurements_temp
         self.measurement_array = np.zeros((self.no_impacts,
                                            len(self.all_channels),
-                                           int(sampling_rate*acquisition_time)),
+                                           int(self.sampling_rate*self.acquisition_time)),
                                           dtype=np.float64)  # shape: no_impacts, no_channels, samples
 
         # Double impact control
@@ -127,17 +178,23 @@ class VibTesting:
         self.double_imp_force_lim = double_imp_force_lim
 
         # Measurement info
-        try:
+        if self.data_source == 'NI':
+            try:
+                self.meas_info = {'Sampling rate': self.sampling_rate,
+                                'Acquisiton time': self.acquisition_time,
+                                'Used devices': self.device_list,
+                                'Channels': self.all_channels,
+                                'Force channel index': self.force_chn_ind}
+            except AttributeError:
+                self.meas_info = {'Sampling rate': self.sampling_rate,
+                                'Acquisiton time': self.acquisition_time,
+                                'Used devices': self.device_list,
+                                'Channels': self.all_channels}
+        elif self.data_source == 'Dewesoft':
             self.meas_info = {'Sampling rate': self.sampling_rate,
-                              'Acquisiton time': self.acquisition_time,
-                              'Used devices': self.device_list,
-                              'Channels': self.all_channels,
+                              'Acquisition time': self.acquisition_time,
                               'Force channel index': self.force_chn_ind}
-        except AttributeError:
-            self.meas_info = {'Sampling rate': self.sampling_rate,
-                              'Acquisiton time': self.acquisition_time,
-                              'Used devices': self.device_list,
-                              'Channels': self.all_channels}
+
 
         # Measurement series variables
         self.meas_file = ''
@@ -147,15 +204,50 @@ class VibTesting:
         self.saved = False
 
         # Admittance measurement variables
+
         self.admittance = False
         self.Y = None
         self.dof_data = None
         self.Y_done = None
         self.adm_channels = None
         self.adm_impacts = None
-        self.force_chn_ind = None
         self.chn_factors = None
         self.imp_factors = None
+
+    def connect_DS(self, path_to_setup_file, dll_loc=r".\Dewesoft\DSRemoteConnect64.dll"):
+        hllDll = ctypes.WinDLL (dll_loc)
+        # Connect to DevesoftX
+        dsconInstance = HANDLE()
+        self.doErrCheck(hllDll.dsconCreateInstance(ctypes.pointer(dsconInstance), 0), "dsconCreateInstance")
+        self.doErrCheck(hllDll.dsconConnect(dsconInstance, ""), "dsconConnect")    
+        # Load setup
+        self.doErrCheck(hllDll.dsconLoadSetup(dsconInstance, ctypes.c_char_p(path_to_setup_file)), "dsconLoadSetup")
+        # Number of channels
+        numChannels = ctypes.c_size_t()
+        self.doErrCheck(hllDll.dsconGetChannelCount(dsconInstance, ctypes.byref(numChannels)), "dsconGetChannelCount")
+
+        # Enumerate channels
+        self.doErrCheck(hllDll.dsconInitChannelIdEnum(dsconInstance), "dsconInitChannelIdEnum")
+        localValue = ctypes.c_size_t(0)
+        self.doErrCheck(hllDll.dsconGetNextChannelIdSize(dsconInstance, ctypes.byref(localValue)), "dsconGetNextChannelIdSize") #size of string for preallocation
+        id_str = ctypes.cast((ctypes.c_char * (localValue.value))(), ctypes.c_char_p)
+        ch_name = ctypes.cast((ctypes.c_char * 50)(), ctypes.c_char_p)
+        ch_instances = []
+        while(self.doErrCheck(hllDll.dsconGetNextChannelId(dsconInstance, id_str), "dsconGetNextChannelId") == 0):
+            localValue = ctypes.c_size_t(0)
+            self.doErrCheck(hllDll.dsconGetNextChannelIdSize(dsconInstance, ctypes.byref(localValue)), "dsconGetNextChannelIdSize") #size of string for preallocation
+            ch_instance = HANDLE()
+            self.doErrCheck(hllDll.dsconCreateChannelInstance(dsconInstance, id_str, ctypes.pointer(ch_instance)), "dsconCreateChannelInstance")
+            ch_instances.append(ch_instance)
+            self.doErrCheck(hllDll.dsconChannelGetName(ch_instance, ch_name, 50), "dsconChannelGetName")
+
+        return hllDll, ch_instances, dsconInstance
+    
+    @staticmethod
+    def doErrCheck(err_code, descr):
+        if err_code < 0:
+            print(str(descr) + " errCode: " + str(err_code))
+        return err_code
 
     def reset_series_params(self):
         self.point_ind = 0
@@ -222,7 +314,7 @@ class VibTesting:
                         chn_name = self.get_chn_name(chn_, sensor_ind)
                         print(chn_name)
                         self.new_channel(chn_, physical_channel=phys_chn, name_to_assign_to_channel=chn_name,
-                                         min_val=chn_.Min, max_val=chn_.Max,
+                                         chn_val=chn_.Min, max_val=chn_.Max,
                                          units=self.unit_conv[chn_['Izhodna enota']],
                                          sensitivity=chn_.Obcutljivost,
                                          sensitivity_units=self.unit_conv[chn_['Enota obcutljivosti']])
@@ -296,9 +388,14 @@ class VibTesting:
                                           dtype=np.float64)
         try:
             pbar = tqdm(total=self.acquisition_time)
-            start_time = time.time()
             i = 1
-            self.task.start()
+            if self.data_source=='NI':
+                self.task.start()
+            if self.data_source=='Dewesoft':
+                self.hllDll.dsconStartMeasurement(self.conn_instance)
+            # TODO: Dodaj meritve z DEWESOFTOM !!
+            start_time = time.time()
+            
             while True:
                 self.measurement_array[:, (i - 1) * self.sampling_rate:i * self.sampling_rate] = np.array(
                     self.task.read(number_of_samples_per_channel=self.sampling_rate, timeout=10.0))
@@ -316,6 +413,7 @@ class VibTesting:
             self.acquire_op_signal(save_to=save_to)
         return pbar
 
+
     def save_op_test_results(self, save_to, pbar):
         out = Output()
         # Save measurement info
@@ -326,7 +424,7 @@ class VibTesting:
             button_style='',  # 'success', 'info', 'warning', 'danger' or ''
             style={'description_width': 'initial'}
         )
-        # Save measurements
+        # Save self.measurements_temp
         save_button = widgets.Button(description='Save')
         # Buttons for measurement series
 
@@ -379,7 +477,7 @@ class VibTesting:
     def start_impact_test(self, no_impacts=None, save_to=None, series=False):
         """
         :param no_impacts:
-        :param save_to: name of the file in which measurements are to be saved.
+        :param save_to: name of the file in which self.measurements_temp are to be saved.
         :param series: 
         """
         if no_impacts is not None:
@@ -392,11 +490,13 @@ class VibTesting:
         pbar = tqdm(total=self.no_impacts)
 
         # prevents error in case of interruption during last measurement
-        if not self.task.is_task_done():
+        if (self.data_source == 'NI') and (not self.task.is_task_done()):
             self.task.stop()
 
         imp = 0
         self.clear_stored_data()
+        if self.data_source == 'Dewesoft':
+            self.hllDll.dsconStartMeasurement(self.conn_instance)
         while imp < self.no_impacts:
             # Beep denoting start of the measurement
             winsound.Beep(410, 180)
@@ -441,6 +541,8 @@ class VibTesting:
                 pbar.update(1)
         winsound.PlaySound("SystemExit", winsound.SND_ALIAS)
         pbar.container.children[-2].style.bar_color = 'green'
+        if self.data_source == 'Dewesoft':
+            self.hllDll.dsconStopMeasurement(self.conn_instance)
         self.save_imp_test_results(save_to, pbar, series=series)
 
     def start_imp_test_series(self, list_of_points, measurement_file):
@@ -491,27 +593,78 @@ class VibTesting:
                             presamples=self.presamples)
 
         trig = True
-        self.task.start()
-        while True:
-            data = self.measure()
-            trigger.add_data(data.T)
-            if trigger.finished:
-                self.task.stop()
-                break
-            if trigger.triggered == True and trig == True:
-                trig = False
+        if self.data_source == 'NI':
+            self.task.start()
+            while True:
+                data = self.measure_NI()
+                trigger.add_data(data.T)
+                if trigger.finished:
+                    self.task.stop()
+                    break
+                if trigger.triggered == True and trig == True:
+                    trig = False
+
+        elif self.data_source == 'Dewesoft':
+            self.count_ = 0
+            while True:
+                data = self.measure_DS()
+                trigger.add_data(data.T)
+                if trigger.finished:
+                    self.firts_meas = True
+                    self.count_ = 0
+                    break
+                if trigger.triggered == True and trig == True:
+                    trig = False
+            
         return trigger.get_data().T
 
-    def measure(self):
+    def measure_NI(self):
         no_smpl_per_chn = int(self.sampling_rate * self.acquisition_time * 2)
         # factor *2 to obtain sufficient amount of samples. (?)
         data = np.array(self.task.read(number_of_samples_per_channel=no_smpl_per_chn, timeout=10.0))
         return data
+    
+    def measure_DS(self):
+        no_smpl_per_chn = int(self.sampling_rate * self.acquisition_time * 2)
+        if self.firts_meas:
+            self.measurements_temp = {i:np.array([]) for i in range(len(self.ch_instances))}
+            self.firts_meas = False
+        samples_measured = {i:0 for i in range(len(self.ch_instances))}
+        while True:
+            time.sleep(self.update_rate)     
+            self.countData = ctypes.c_size_t(self.sampling_rate)  
+            for i in range(len(self.ch_instances)):
+                self.hllDll.dsconChannelReadScalarData_2(self.ch_instances[i], self.data_p, self.time_stamp_p, ctypes.byref(self.countData))
+                samples_measured[i] += self.countData.value
+                self.measurements_temp[i] = np.concatenate([self.measurements_temp[i], self.get_array_DS(self.data_p, self.countData.value)])
+            #print(samples_measured[i], self.countData.value)
+            if samples_measured[0] > no_smpl_per_chn:
+                try:
+                    data = np.zeros((len(self.ch_instances), no_smpl_per_chn))
+                    for j in range(len(self.ch_instances)):
+                        data[j, :] = self.measurements_temp[j][self.count_*no_smpl_per_chn:(self.count_+1)*no_smpl_per_chn]
+                    self.count_ += 1
+                    break
+                except ValueError:
+                    pass
+        return data
+    
+    @staticmethod
+    def get_array_DS(data, no_samples):
+        """ Get measurement np.array from data read from DewesoftX"""
+        array = np.zeros(no_samples)
+        for i in range(no_samples):
+            array[i] = data[i]
+        return array
 
     def check_chn_overload(self, imp):
+        chn_names_ = [_ for _ in self.chn_names if 'force' not in _]
         for i in range(self.measurement_array.shape[1]):
             # če vrednost preseže 95% do meje
-            chn_min, chn_max = self.task.ai_channels[i].ai_min*0.95, self.task.ai_channels[i].ai_max*0.95
+            if self.data_source == 'NI':
+                chn_min, chn_max = self.task.ai_channels[i].ai_min*0.95, self.task.ai_channels[i].ai_max*0.95
+            elif self.data_source == 'Dewesoft':
+                chn_min, chn_max = self.sensor_data[chn_names_[i]]['min']*0.95, self.sensor_data[chn_names_[i]]['max']*0.95
             sig_min, sig_max = min(self.measurement_array[imp, i, :]), max(self.measurement_array[imp, i, :])
             if (sig_min > chn_min) and (sig_max < chn_max):
                 return True
@@ -520,8 +673,11 @@ class VibTesting:
                 return False
 
     def check_imp_overload(self, imp):
-        imp_ampl = max(self.measurement_array[imp, self.force_chn_ind, :])
-        imp_max = self.task.ai_channels[self.force_chn_ind].ai_max*0.95
+        imp_ampl = np.max(self.measurement_array[imp, self.force_chn_ind, :])
+        if self.data_source == 'NI':
+            imp_max = self.task.ai_channels[self.force_chn_ind].ai_max*0.95
+        elif self.data_source == 'Dewesoft':
+            imp_max = self.sensor_data['force']['max']*0.95
         if imp_ampl < imp_max:
             return True
         else:
@@ -556,7 +712,7 @@ class VibTesting:
         options = [f'Measurement {i+1}' for i in range(self.no_impacts)]
         out = Output()
 
-        # Select measurements
+        # Select self.measurements_temp
         selection = widgets.SelectMultiple(options=options, value=tuple(options), rows=len(options))
         selection.layout = Layout(width='200px')
         # Save measurement info
@@ -567,7 +723,7 @@ class VibTesting:
             button_style='',  # 'success', 'info', 'warning', 'danger' or ''
             style={'description_width': 'initial'}
         )
-        # Save measurements
+        # Save self.measurements_temp
         button = widgets.Button(description='Save')
 
        
@@ -785,9 +941,9 @@ class VibTesting:
     def get_FRF(X, F, filter_list=None, estimator='H1', kind='admittance'):
         """
         Function calculates frequency response functions (FRF) from measurement data.
-        :param X: np.array of accelerations (frequencies, repeated measurements)
-        :param F: np.array of accelerations (frequencies, repeated measurements)
-        :param filter_list: list of indices of measurements to be excluded from the FRF calculation
+        :param X: np.array of accelerations (frequencies, repeated self.measurements_temp)
+        :param F: np.array of accelerations (frequencies, repeated self.measurements_temp)
+        :param filter_list: list of indices of self.measurements_temp to be excluded from the FRF calculation
         :param estimator: FRF estimator (H1, H2)
         :param kind: FRF type (admittance/impedance)
         :return: averaged FRF
